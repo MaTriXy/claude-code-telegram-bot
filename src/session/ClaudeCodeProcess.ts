@@ -19,7 +19,7 @@ const COMMON_CLAUDE_PATHS = [
 
 /**
  * Wraps a Claude Code CLI process for interaction
- * Uses --print mode with --session-id to maintain conversation continuity
+ * Uses --print mode with --resume to maintain conversation continuity
  * Each message spawns a new process but continues the same Claude session
  */
 export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcessInterface {
@@ -27,8 +27,8 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
   private _isRunning = false;
   private outputBuffer = '';
   private resolvedCliPath: string;
-  private sessionId: string;
-  private pendingInput: string | null = null;
+  private claudeSessionId: string | null = null; // Session ID returned by Claude CLI
+  private isFirstMessage = true;
 
   constructor(
     private workingDir: string,
@@ -36,7 +36,6 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
   ) {
     super();
     this.resolvedCliPath = this.resolveCliPath(cliPath);
-    this.sessionId = randomUUID();
     // Don't spawn immediately - wait for first input
     this._isRunning = true; // Mark as running so send() works
   }
@@ -46,10 +45,10 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
   }
 
   /**
-   * Get the session ID for this process
+   * Get the Claude session ID (available after first message)
    */
-  getSessionId(): string {
-    return this.sessionId;
+  getSessionId(): string | null {
+    return this.claudeSessionId;
   }
 
   /**
@@ -80,18 +79,24 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
    */
   private spawnForMessage(prompt: string): void {
     try {
-      // Spawn claude with:
+      // Build args:
       // --print: non-interactive mode (exit after response)
       // --output-format stream-json: parseable streaming output (requires --verbose)
       // --verbose: required for stream-json output format
-      // --session-id: maintain conversation continuity across invocations
+      // --resume: continue previous session (for follow-up messages)
       const args = [
         '--print',
         '--verbose',
         '--output-format', 'stream-json',
-        '--session-id', this.sessionId,
-        prompt
       ];
+
+      // For follow-up messages, use --resume to continue the conversation
+      if (!this.isFirstMessage && this.claudeSessionId) {
+        args.push('--resume', this.claudeSessionId);
+      }
+
+      // Add the prompt
+      args.push(prompt);
 
       this.process = spawn(this.resolvedCliPath, args, {
         cwd: this.workingDir,
@@ -112,6 +117,15 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
         for (const line of lines) {
           if (line.trim()) {
+            // Try to extract session_id from output for conversation continuity
+            try {
+              const parsed = JSON.parse(line);
+              if (parsed.session_id && !this.claudeSessionId) {
+                this.claudeSessionId = parsed.session_id;
+              }
+            } catch {
+              // Not valid JSON, ignore
+            }
             this.emit('output', line);
           }
         }
@@ -132,6 +146,15 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
       this.process.on('close', (code) => {
         // Emit any remaining buffered output
         if (this.outputBuffer.trim()) {
+          // Try to extract session_id from remaining buffer
+          try {
+            const parsed = JSON.parse(this.outputBuffer.trim());
+            if (parsed.session_id && !this.claudeSessionId) {
+              this.claudeSessionId = parsed.session_id;
+            }
+          } catch {
+            // Not valid JSON, ignore
+          }
           this.emit('output', this.outputBuffer);
           this.outputBuffer = '';
         }
@@ -139,6 +162,11 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
         // Process completed - in print mode this is normal
         // Don't set _isRunning to false, we can still send more messages
         this.process = null;
+
+        // Mark that first message is done
+        if (this.isFirstMessage) {
+          this.isFirstMessage = false;
+        }
 
         // Emit close event for this message completion
         this.emit('message_complete', code);

@@ -1,7 +1,6 @@
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
 import { existsSync } from 'fs';
-import { randomUUID } from 'crypto';
 // Common paths where claude CLI might be installed
 const COMMON_CLAUDE_PATHS = [
     '/opt/homebrew/bin/claude', // macOS Homebrew (Apple Silicon)
@@ -10,7 +9,7 @@ const COMMON_CLAUDE_PATHS = [
 ];
 /**
  * Wraps a Claude Code CLI process for interaction
- * Uses --print mode with --session-id to maintain conversation continuity
+ * Uses --print mode with --resume to maintain conversation continuity
  * Each message spawns a new process but continues the same Claude session
  */
 export class ClaudeCodeProcess extends EventEmitter {
@@ -20,14 +19,13 @@ export class ClaudeCodeProcess extends EventEmitter {
     _isRunning = false;
     outputBuffer = '';
     resolvedCliPath;
-    sessionId;
-    pendingInput = null;
+    claudeSessionId = null; // Session ID returned by Claude CLI
+    isFirstMessage = true;
     constructor(workingDir, cliPath = 'claude') {
         super();
         this.workingDir = workingDir;
         this.cliPath = cliPath;
         this.resolvedCliPath = this.resolveCliPath(cliPath);
-        this.sessionId = randomUUID();
         // Don't spawn immediately - wait for first input
         this._isRunning = true; // Mark as running so send() works
     }
@@ -35,10 +33,10 @@ export class ClaudeCodeProcess extends EventEmitter {
         return this._isRunning;
     }
     /**
-     * Get the session ID for this process
+     * Get the Claude session ID (available after first message)
      */
     getSessionId() {
-        return this.sessionId;
+        return this.claudeSessionId;
     }
     /**
      * Resolve the CLI path - if it's just 'claude', try to find it in common locations
@@ -65,18 +63,22 @@ export class ClaudeCodeProcess extends EventEmitter {
      */
     spawnForMessage(prompt) {
         try {
-            // Spawn claude with:
+            // Build args:
             // --print: non-interactive mode (exit after response)
             // --output-format stream-json: parseable streaming output (requires --verbose)
             // --verbose: required for stream-json output format
-            // --session-id: maintain conversation continuity across invocations
+            // --resume: continue previous session (for follow-up messages)
             const args = [
                 '--print',
                 '--verbose',
                 '--output-format', 'stream-json',
-                '--session-id', this.sessionId,
-                prompt
             ];
+            // For follow-up messages, use --resume to continue the conversation
+            if (!this.isFirstMessage && this.claudeSessionId) {
+                args.push('--resume', this.claudeSessionId);
+            }
+            // Add the prompt
+            args.push(prompt);
             this.process = spawn(this.resolvedCliPath, args, {
                 cwd: this.workingDir,
                 // IMPORTANT: stdin must be 'ignore', not 'pipe'
@@ -93,6 +95,16 @@ export class ClaudeCodeProcess extends EventEmitter {
                 this.outputBuffer = lines.pop() || '';
                 for (const line of lines) {
                     if (line.trim()) {
+                        // Try to extract session_id from output for conversation continuity
+                        try {
+                            const parsed = JSON.parse(line);
+                            if (parsed.session_id && !this.claudeSessionId) {
+                                this.claudeSessionId = parsed.session_id;
+                            }
+                        }
+                        catch {
+                            // Not valid JSON, ignore
+                        }
                         this.emit('output', line);
                     }
                 }
@@ -111,12 +123,26 @@ export class ClaudeCodeProcess extends EventEmitter {
             this.process.on('close', (code) => {
                 // Emit any remaining buffered output
                 if (this.outputBuffer.trim()) {
+                    // Try to extract session_id from remaining buffer
+                    try {
+                        const parsed = JSON.parse(this.outputBuffer.trim());
+                        if (parsed.session_id && !this.claudeSessionId) {
+                            this.claudeSessionId = parsed.session_id;
+                        }
+                    }
+                    catch {
+                        // Not valid JSON, ignore
+                    }
                     this.emit('output', this.outputBuffer);
                     this.outputBuffer = '';
                 }
                 // Process completed - in print mode this is normal
                 // Don't set _isRunning to false, we can still send more messages
                 this.process = null;
+                // Mark that first message is done
+                if (this.isFirstMessage) {
+                    this.isFirstMessage = false;
+                }
                 // Emit close event for this message completion
                 this.emit('message_complete', code);
             });
