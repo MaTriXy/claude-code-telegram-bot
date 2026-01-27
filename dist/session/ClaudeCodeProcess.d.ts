@@ -7,6 +7,8 @@ export interface ClaudeCodeProcessEvents {
 }
 /**
  * Wraps a Claude Code CLI process for interaction
+ * Uses --print mode with --session-id to maintain conversation continuity
+ * Each message spawns a new process but continues the same Claude session
  */
 export declare class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcessInterface {
     private workingDir;
@@ -15,18 +17,26 @@ export declare class ClaudeCodeProcess extends EventEmitter implements ClaudeCod
     private _isRunning;
     private outputBuffer;
     private resolvedCliPath;
+    private sessionId;
+    private pendingInput;
     constructor(workingDir: string, cliPath?: string);
     get isRunning(): boolean;
+    /**
+     * Get the session ID for this process
+     */
+    getSessionId(): string;
     /**
      * Resolve the CLI path - if it's just 'claude', try to find it in common locations
      */
     private resolveCliPath;
     /**
-     * Spawn the Claude Code CLI process
+     * Spawn the Claude Code CLI process for a single message
+     * Uses --print mode with streaming JSON for parseable output
      */
-    private spawn;
+    private spawnForMessage;
     /**
-     * Send input to the CLI process stdin
+     * Send input to Claude - spawns a new process for each message
+     * but maintains conversation via session ID
      */
     send(input: string): void;
     /**

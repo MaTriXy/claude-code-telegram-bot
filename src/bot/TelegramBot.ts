@@ -379,11 +379,11 @@ export class TelegramBot {
       this.forwardQuestionToUsers(question);
     });
 
-    // Listen for general output (assistant messages)
-    this.outputParser.on('output', (output: { type: string; content?: string }) => {
+    // Listen for text output (accumulated from streaming deltas)
+    this.outputParser.on('text', (text: string) => {
       // Forward assistant text messages to users
-      if (output.type === 'assistant' && output.content) {
-        this.forwardTextToUsers(output.content);
+      if (text && text.trim()) {
+        this.forwardTextToUsers(text);
       }
     });
 

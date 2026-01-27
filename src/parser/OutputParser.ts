@@ -30,6 +30,7 @@ interface AskUserQuestionInput {
  */
 export class OutputParser extends EventEmitter {
   private buffer = '';
+  private currentTextContent = ''; // Accumulates text from content_block_delta events
 
   /**
    * Detect if output contains an AskUserQuestion tool call
@@ -190,8 +191,45 @@ export class OutputParser extends EventEmitter {
         const output = JSON.parse(trimmed) as ClaudeOutput;
         results.push(output);
 
-        // Emit output event
+        // Emit raw output event
         this.emit('output', output);
+
+        // Handle streaming content_block_delta events (where actual text comes in)
+        if (output.type === 'content_block_delta') {
+          const deltaOutput = output as { type: 'content_block_delta'; delta?: { type?: string; text?: string } };
+          if (deltaOutput.delta?.type === 'text_delta' && deltaOutput.delta?.text) {
+            this.currentTextContent += deltaOutput.delta.text;
+          }
+        }
+
+        // When content block stops, emit accumulated text
+        if (output.type === 'content_block_stop') {
+          if (this.currentTextContent.trim()) {
+            this.emit('text', this.currentTextContent);
+            this.currentTextContent = '';
+          }
+        }
+
+        // Handle 'assistant' type messages from stream-json format
+        // Format: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+        if (output.type === 'assistant') {
+          const assistantOutput = output as {
+            type: 'assistant';
+            message?: {
+              content?: Array<{ type?: string; text?: string }>
+            }
+          };
+          if (assistantOutput.message?.content) {
+            for (const block of assistantOutput.message.content) {
+              if (block.type === 'text' && block.text) {
+                this.emit('text', block.text);
+              }
+            }
+          }
+        }
+
+        // Note: Don't emit from 'result' type to avoid duplicates
+        // The 'result' contains the same text as 'assistant'
 
         // Check if it's a question and emit question event
         if (this.detectQuestion(output)) {

@@ -62,7 +62,7 @@ export interface ParsedQuestion {
 /**
  * Claude Code output event types
  */
-export type ClaudeOutputType = 'assistant' | 'user' | 'tool_use' | 'tool_result' | 'system' | 'error' | 'content_block_start' | 'content_block_stop';
+export type ClaudeOutputType = 'assistant' | 'user' | 'tool_use' | 'tool_result' | 'system' | 'error' | 'content_block_start' | 'content_block_delta' | 'content_block_stop' | 'message_start' | 'message_delta' | 'message_stop' | 'result';
 /**
  * Base Claude Code output message
  */

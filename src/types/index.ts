@@ -80,7 +80,12 @@ export type ClaudeOutputType =
   | 'system'
   | 'error'
   | 'content_block_start'
-  | 'content_block_stop';
+  | 'content_block_delta'
+  | 'content_block_stop'
+  | 'message_start'
+  | 'message_delta'
+  | 'message_stop'
+  | 'result';
 
 /**
  * Base Claude Code output message

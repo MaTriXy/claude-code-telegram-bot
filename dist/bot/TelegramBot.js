@@ -318,11 +318,11 @@ export class TelegramBot {
         this.outputParser.on('question', (question) => {
             this.forwardQuestionToUsers(question);
         });
-        // Listen for general output (assistant messages)
-        this.outputParser.on('output', (output) => {
+        // Listen for text output (accumulated from streaming deltas)
+        this.outputParser.on('text', (text) => {
             // Forward assistant text messages to users
-            if (output.type === 'assistant' && output.content) {
-                this.forwardTextToUsers(output.content);
+            if (text && text.trim()) {
+                this.forwardTextToUsers(text);
             }
         });
         // Listen for progress events (tool executions)
