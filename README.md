@@ -41,7 +41,7 @@ The bot acts as a bridge between Telegram and the Claude Code CLI:
 1. **User sends a message** via Telegram
 2. **TelegramBot** receives the message, verifies authorization, and forwards it to the active session
 3. **SessionManager** routes the input to the correct **ClaudeCodeProcess**
-4. **ClaudeCodeProcess** spawns the Claude CLI in `--print` mode with `--output-format stream-json`
+4. **ClaudeCodeProcess** spawns the Claude CLI with `--dangerously-skip-permissions --print --output-format stream-json`
 5. **OutputParser** processes the streaming JSON output, detecting questions, tool calls, and text responses
 6. Parsed output is formatted and sent back to the user via Telegram
 7. For follow-up messages, `--resume <session_id>` maintains conversation continuity
@@ -283,7 +283,7 @@ This sends a hard kill signal to the Claude process. The session remains active,
 |-----------|------|----------------|
 | **TelegramBot** | `src/bot/TelegramBot.ts` | Handles Telegram commands, user authorization, message routing, and output forwarding |
 | **SessionManager** | `src/session/SessionManager.ts` | Creates, tracks, and manages multiple Claude sessions with ULID-based IDs |
-| **ClaudeCodeProcess** | `src/session/ClaudeCodeProcess.ts` | Spawns Claude CLI processes in `--print` mode, maintains conversation via `--resume` |
+| **ClaudeCodeProcess** | `src/session/ClaudeCodeProcess.ts` | Spawns Claude CLI processes with `--dangerously-skip-permissions`, maintains conversation via `--resume` |
 | **OutputParser** | `src/parser/OutputParser.ts` | Parses streaming JSON, detects `AskUserQuestion` tool calls, emits typed events |
 | **ClaudeSessionScanner** | `src/utils/ClaudeSessionScanner.ts` | Scans `~/.claude/` for existing sessions, enables session discovery and attachment |
 
@@ -454,6 +454,10 @@ Simply create a new session to continue working.
 Telegram has a 4096 character limit per message. The bot automatically truncates long responses and adds "...(truncated)" indicator.
 
 ## Security
+
+> **WARNING: Permission Bypass Enabled**
+>
+> This bot runs Claude CLI with the `--dangerously-skip-permissions` flag, which bypasses all permission checks. This means Claude can read, write, and execute files without asking for confirmation. **Only run this bot in trusted, sandboxed environments.** Do not use in production systems with sensitive data unless you fully understand the implications.
 
 ### Authorization
 

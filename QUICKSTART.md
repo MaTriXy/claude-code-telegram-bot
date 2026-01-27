@@ -1,5 +1,7 @@
 # Quick Start
 
+> **Warning**: This bot runs Claude CLI with `--dangerously-skip-permissions`, bypassing all permission checks. Only use in trusted/sandboxed environments.
+
 ## Prerequisites
 
 - Node.js 18+

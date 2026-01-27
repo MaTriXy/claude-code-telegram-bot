@@ -180,8 +180,8 @@ The bot automatically searches for the Claude CLI in these locations (in order):
 - **Lines of code**: ~411 lines
 
 ### 5.3 ClaudeCodeProcess (`src/session/ClaudeCodeProcess.ts`)
-- **Responsibility**: Spawn Claude CLI processes, maintain conversation via `--resume`
-- **Key features**: CLI path resolution, clean environment, stdin handling
+- **Responsibility**: Spawn Claude CLI processes with `--dangerously-skip-permissions`, maintain conversation via `--resume`
+- **Key features**: CLI path resolution, clean environment, stdin handling, permission bypass
 - **Lines of code**: ~273 lines
 
 ### 5.4 OutputParser (`src/parser/OutputParser.ts`)
@@ -288,13 +288,16 @@ The bot automatically searches for the Claude CLI in these locations (in order):
 
 ### Claude CLI Invocation
 ```bash
-claude --print --verbose --output-format stream-json [--resume <session_id>] "<prompt>"
+claude --dangerously-skip-permissions --print --verbose --output-format stream-json [--resume <session_id>] "<prompt>"
 ```
 
+- `--dangerously-skip-permissions`: **Bypasses all permission checks** (see Security Warning below)
 - `--print`: Non-interactive mode (exit after response)
 - `--verbose`: Required for stream-json output format
 - `--output-format stream-json`: Parseable streaming JSON
 - `--resume`: Continue previous session (for follow-up messages)
+
+> **Security Warning**: The `--dangerously-skip-permissions` flag allows Claude to perform file operations (read, write, execute) without user confirmation. This is intended for sandboxed or trusted environments only. Do not use this bot with access to sensitive systems or data.
 
 ### Environment Sanitization
 Child processes remove these variables to prevent conflicts:
