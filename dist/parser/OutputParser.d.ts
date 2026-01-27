@@ -6,6 +6,8 @@ import type { ParsedQuestion, ClaudeOutput, ToolUseOutput, TelegramFormattedMess
 export declare class OutputParser extends EventEmitter {
     private buffer;
     private currentTextContent;
+    private emittedQuestionIds;
+    private lastEmittedText;
     /**
      * Detect if output contains an AskUserQuestion tool call
      */

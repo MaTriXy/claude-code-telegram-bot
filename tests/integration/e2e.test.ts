@@ -307,7 +307,8 @@ describe('Integration Tests', () => {
         done();
       });
 
-      const data = '{"type":"tool_use","name":"Read","input":{"file_path":"/test.txt"}}\n';
+      // Tool calls come inside assistant.message.content blocks in stream-json format
+      const data = '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/test.txt"}}]}}\n';
       outputParser.parseStreamOutput(data);
     });
   });

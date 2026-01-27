@@ -6,6 +6,8 @@ const MAX_DESCRIPTION_LENGTH = 100;
 export class OutputParser extends EventEmitter {
     buffer = '';
     currentTextContent = ''; // Accumulates text from content_block_delta events
+    emittedQuestionIds = new Set(); // Track emitted questions to avoid duplicates
+    lastEmittedText = ''; // Track last emitted text to avoid duplicates
     /**
      * Detect if output contains an AskUserQuestion tool call
      */
@@ -149,10 +151,15 @@ export class OutputParser extends EventEmitter {
                         this.currentTextContent += deltaOutput.delta.text;
                     }
                 }
-                // When content block stops, emit accumulated text
+                // When content block stops, emit accumulated text (with deduplication)
                 if (output.type === 'content_block_stop') {
                     if (this.currentTextContent.trim()) {
-                        this.emit('text', this.currentTextContent);
+                        const textToEmit = this.currentTextContent.trim();
+                        // Only emit if it's different from the last emitted text
+                        if (textToEmit !== this.lastEmittedText) {
+                            this.lastEmittedText = textToEmit;
+                            this.emit('text', this.currentTextContent);
+                        }
                         this.currentTextContent = '';
                     }
                 }
@@ -163,9 +170,14 @@ export class OutputParser extends EventEmitter {
                     const assistantOutput = output;
                     if (assistantOutput.message?.content) {
                         for (const block of assistantOutput.message.content) {
-                            // Emit text content
+                            // Emit text content (with deduplication)
                             if (block.type === 'text' && block.text) {
-                                this.emit('text', block.text);
+                                const textToEmit = block.text.trim();
+                                // Only emit if it's different from the last emitted text
+                                if (textToEmit && textToEmit !== this.lastEmittedText) {
+                                    this.lastEmittedText = textToEmit;
+                                    this.emit('text', block.text);
+                                }
                             }
                             // Check for tool_use blocks (e.g., AskUserQuestion)
                             if (block.type === 'tool_use' && block.name) {
@@ -175,7 +187,12 @@ export class OutputParser extends EventEmitter {
                                 if (block.name === 'AskUserQuestion') {
                                     const question = this.parseQuestion(toolUseBlock);
                                     if (question) {
-                                        this.emit('question', question);
+                                        // Create unique ID for this question to avoid duplicate emissions
+                                        const questionId = `${question.question}:${question.options.map(o => o.label).join(',')}`;
+                                        if (!this.emittedQuestionIds.has(questionId)) {
+                                            this.emittedQuestionIds.add(questionId);
+                                            this.emit('question', question);
+                                        }
                                     }
                                 }
                                 else {
@@ -188,21 +205,23 @@ export class OutputParser extends EventEmitter {
                 }
                 // Note: Don't emit from 'result' type to avoid duplicates
                 // The 'result' contains the same text as 'assistant'
-                // Check if it's a question and emit question event
-                if (this.detectQuestion(output)) {
-                    const question = this.parseQuestion(output);
-                    if (question) {
-                        this.emit('question', question);
-                    }
-                }
-                // Check if it's a tool call and emit tool_call event
-                if (this.detectToolCall(output)) {
-                    this.emit('tool_call', output);
-                    // Emit progress event for tool executions (not questions)
+                // Check if it's a standalone tool_use output (not inside assistant block)
+                // Only emit if we haven't already emitted this from the assistant block
+                if (this.detectToolCall(output) && output.type === 'tool_use') {
                     const toolUse = output;
-                    if (toolUse.name !== 'AskUserQuestion') {
-                        this.emit('progress', { type: 'tool_start', toolName: toolUse.name });
+                    // Check if it's a question - use deduplication
+                    if (toolUse.name === 'AskUserQuestion') {
+                        const question = this.parseQuestion(toolUse);
+                        if (question) {
+                            const questionId = `${question.question}:${question.options.map(o => o.label).join(',')}`;
+                            if (!this.emittedQuestionIds.has(questionId)) {
+                                this.emittedQuestionIds.add(questionId);
+                                this.emit('question', question);
+                            }
+                        }
                     }
+                    // Note: tool_call and progress events are handled in the assistant block
+                    // to avoid duplicate emissions
                 }
                 // Emit progress event for tool results
                 if (output.type === 'tool_result') {
@@ -227,7 +246,12 @@ export class OutputParser extends EventEmitter {
                 // This handles cases where content_block_stop was never received
                 if (output.type === 'result') {
                     if (this.currentTextContent.trim()) {
-                        this.emit('text', this.currentTextContent);
+                        const textToEmit = this.currentTextContent.trim();
+                        // Only emit if it's different from the last emitted text
+                        if (textToEmit !== this.lastEmittedText) {
+                            this.lastEmittedText = textToEmit;
+                            this.emit('text', this.currentTextContent);
+                        }
                         this.currentTextContent = '';
                     }
                 }
@@ -245,6 +269,8 @@ export class OutputParser extends EventEmitter {
     resetBuffer() {
         this.buffer = '';
         this.currentTextContent = '';
+        this.emittedQuestionIds.clear();
+        this.lastEmittedText = '';
     }
 }
 //# sourceMappingURL=OutputParser.js.map
