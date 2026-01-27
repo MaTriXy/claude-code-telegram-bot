@@ -90,6 +90,20 @@ Special feedback is provided for babysitter commands:
 
 ## Installation
 
+### Quick Install (npm)
+
+```bash
+npm install -g claude-code-telegram-bot
+```
+
+Then create a `.env` file with your configuration and run:
+
+```bash
+claude-code-telegram-bot
+```
+
+### From Source
+
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/yourusername/claude-code-telegram-bot.git
@@ -121,6 +135,8 @@ Special feedback is provided for babysitter commands:
    npm run build
    npm start
    ```
+
+> **Production Deployment:** See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for PM2, Docker, and systemd deployment guides.
 
 ## Configuration
 

@@ -1,0 +1,30 @@
+# Source files (dist is included)
+src/
+tests/
+
+# Config files
+.env
+.env.local
+tsconfig.json
+jest.config.js
+.eslintrc*
+.prettierrc*
+
+# Development
+.git/
+.github/
+.vscode/
+.idea/
+*.log
+coverage/
+node_modules/
+
+# Documentation (README is included)
+docs/
+
+# Babysitter/A5C files
+.a5c/
+
+# OS files
+.DS_Store
+Thumbs.db

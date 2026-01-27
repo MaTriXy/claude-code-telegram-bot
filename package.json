@@ -1,8 +1,11 @@
 {
   "name": "claude-code-telegram-bot",
   "version": "1.0.0",
-  "description": "A Telegram bot to remotely operate Claude Code CLI",
+  "description": "A Telegram bot to remotely operate Claude Code CLI from anywhere",
   "main": "dist/index.js",
+  "bin": {
+    "claude-code-telegram-bot": "./dist/index.js"
+  },
   "type": "module",
   "scripts": {
     "build": "tsc",
@@ -10,17 +13,42 @@
     "dev": "ts-node --esm src/index.ts",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "telegram",
+    "telegram-bot",
     "claude",
+    "claude-code",
+    "anthropic",
     "cli",
     "bot",
-    "automation"
+    "automation",
+    "remote",
+    "mobile",
+    "ai",
+    "llm"
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/claude-code-telegram-bot.git"
+  },
+  "homepage": "https://github.com/yourusername/claude-code-telegram-bot#readme",
+  "bugs": {
+    "url": "https://github.com/yourusername/claude-code-telegram-bot/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    ".env.example"
+  ],
   "dependencies": {
     "dotenv": "^16.4.5",
     "execa": "^8.0.1",
