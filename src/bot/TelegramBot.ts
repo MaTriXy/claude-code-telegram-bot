@@ -103,7 +103,7 @@ export class TelegramBot {
           'Send any text to interact with the active Claude session.\n\n' +
           '═══════════════════════════════\n' +
           '🧙 100% Built using Babysitter\n' +
-          '      by a5c.ai\n' +
+          '      by a5c.ai - https://a5c.ai\n' +
           '═══════════════════════════════'
       );
     });
