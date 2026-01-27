@@ -34,6 +34,27 @@ A Telegram bot that bridges your mobile device with Anthropic's Claude Code CLI,
 - **Whitelist Security** - Only authorized Telegram user IDs can interact with the bot
 - **Environment Isolation** - Child processes are spawned with clean environment variables
 
+---
+
+## Important Security Notice
+
+**This bot runs with `--dangerously-skip-permissions` enabled.**
+
+With `--dangerously-skip-permissions`, **all of these actions happen without asking**. Claude will automatically read, write, delete files, run commands, and modify your system based on your prompts.
+
+**Recommended use cases:**
+- Sandboxed development environments (Docker, VMs)
+- Disposable/ephemeral environments
+- Projects with version control where changes can be reverted
+- Environments with no access to sensitive data or credentials
+
+**NOT recommended for:**
+- Production servers
+- Systems with sensitive data (credentials, keys, personal info)
+- Shared systems with other users' data
+- Environments without backups
+
+---
 ## How It Works
 
 The bot acts as a bridge between Telegram and the Claude Code CLI:
