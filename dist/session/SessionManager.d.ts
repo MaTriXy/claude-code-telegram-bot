@@ -60,6 +60,14 @@ export declare class SessionManager {
      */
     onSessionOutput(sessionId: string, callback: (data: string) => void): () => void;
     /**
+     * Subscribe to error events from a specific session
+     */
+    onSessionError(sessionId: string, callback: (error: Error) => void): () => void;
+    /**
+     * Subscribe to close events from a specific session
+     */
+    onSessionClose(sessionId: string, callback: (code: number | null) => void): () => void;
+    /**
      * Change the working directory of a session
      * This kills the current process and starts a new one in the new directory
      */

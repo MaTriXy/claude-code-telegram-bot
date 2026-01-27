@@ -78,7 +78,9 @@ export type ClaudeOutputType =
   | 'tool_use'
   | 'tool_result'
   | 'system'
-  | 'error';
+  | 'error'
+  | 'content_block_start'
+  | 'content_block_stop';
 
 /**
  * Base Claude Code output message

@@ -172,6 +172,32 @@ export class SessionManager {
         };
     }
     /**
+     * Subscribe to error events from a specific session
+     */
+    onSessionError(sessionId, callback) {
+        const session = this.getInternalSession(sessionId);
+        if (!session) {
+            throw new Error(`Session not found: ${sessionId}`);
+        }
+        session.process.on('error', callback);
+        return () => {
+            session.process.off('error', callback);
+        };
+    }
+    /**
+     * Subscribe to close events from a specific session
+     */
+    onSessionClose(sessionId, callback) {
+        const session = this.getInternalSession(sessionId);
+        if (!session) {
+            throw new Error(`Session not found: ${sessionId}`);
+        }
+        session.process.on('close', callback);
+        return () => {
+            session.process.off('close', callback);
+        };
+    }
+    /**
      * Change the working directory of a session
      * This kills the current process and starts a new one in the new directory
      */

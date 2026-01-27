@@ -14,6 +14,10 @@ export declare class TelegramBot {
     private pendingQuestions;
     private awaitingCustomInput;
     private outputUnsubscribers;
+    private errorUnsubscribers;
+    private closeUnsubscribers;
+    private lastThinkingMessageTime;
+    private static readonly THINKING_DEBOUNCE_MS;
     constructor(config: TelegramBotConfig);
     /**
      * Set up authorization middleware
@@ -47,6 +51,18 @@ export declare class TelegramBot {
      * Forward text output to all connected users
      */
     private forwardTextToUsers;
+    /**
+     * Forward error messages to all connected users with emoji indicator
+     */
+    private forwardErrorToUsers;
+    /**
+     * Forward status messages to all connected users with emoji indicator
+     */
+    private forwardStatusToUsers;
+    /**
+     * Forward progress messages to all connected users (tool execution progress)
+     */
+    private forwardProgressToUsers;
     /**
      * Forward a question to all connected users
      */

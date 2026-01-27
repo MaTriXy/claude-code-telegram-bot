@@ -24,6 +24,10 @@ export class TelegramBot {
   private pendingQuestions: Map<number, ParsedQuestion> = new Map(); // chatId -> question
   private awaitingCustomInput: Set<number> = new Set(); // chatIds awaiting custom input
   private outputUnsubscribers: Map<string, () => void> = new Map(); // sessionId -> unsubscribe function
+  private errorUnsubscribers: Map<string, () => void> = new Map(); // sessionId -> error unsubscribe
+  private closeUnsubscribers: Map<string, () => void> = new Map(); // sessionId -> close unsubscribe
+  private lastThinkingMessageTime = 0; // Debounce thinking messages
+  private static readonly THINKING_DEBOUNCE_MS = 5000; // 5 seconds debounce
 
   constructor(config: TelegramBotConfig) {
     this.bot = new Telegraf(config.token);
@@ -357,10 +361,32 @@ export class TelegramBot {
     });
 
     // Listen for general output (assistant messages)
-    this.outputParser.on('output', (output: { type: string; content?: string; message?: string }) => {
+    this.outputParser.on('output', (output: { type: string; content?: string }) => {
       // Forward assistant text messages to users
-      if (output.type === 'assistant' && output.message) {
-        this.forwardTextToUsers(output.message);
+      if (output.type === 'assistant' && output.content) {
+        this.forwardTextToUsers(output.content);
+      }
+    });
+
+    // Listen for progress events (tool executions)
+    this.outputParser.on('progress', (progress: { type: string; toolName?: string; success?: boolean }) => {
+      if (progress.type === 'tool_start' && progress.toolName) {
+        this.forwardProgressToUsers(`🔧 Running: ${progress.toolName}`);
+      } else if (progress.type === 'tool_end') {
+        if (progress.success) {
+          this.forwardProgressToUsers('✅ Done');
+        } else {
+          this.forwardProgressToUsers('❌ Failed');
+        }
+      }
+    });
+
+    // Listen for thinking events (debounced)
+    this.outputParser.on('thinking', () => {
+      const now = Date.now();
+      if (now - this.lastThinkingMessageTime >= TelegramBot.THINKING_DEBOUNCE_MS) {
+        this.lastThinkingMessageTime = now;
+        this.forwardProgressToUsers('💭 Thinking...');
       }
     });
   }
@@ -377,8 +403,23 @@ export class TelegramBot {
       const unsubscribe = this.sessionManager.onSessionOutput(sessionId, (data: string) => {
         this.outputParser.parseStreamOutput(data);
       });
-
       this.outputUnsubscribers.set(sessionId, unsubscribe);
+
+      // Subscribe to error events
+      const errorUnsubscribe = this.sessionManager.onSessionError(sessionId, (error: Error) => {
+        this.forwardErrorToUsers(error.message);
+      });
+      this.errorUnsubscribers.set(sessionId, errorUnsubscribe);
+
+      // Subscribe to close events
+      const closeUnsubscribe = this.sessionManager.onSessionClose(sessionId, (code: number | null) => {
+        if (code !== 0 && code !== null) {
+          this.forwardErrorToUsers(`Session crashed (exit code: ${code}) - use /new to restart`);
+        } else {
+          this.forwardStatusToUsers('Session ended gracefully');
+        }
+      });
+      this.closeUnsubscribers.set(sessionId, closeUnsubscribe);
     } catch (error) {
       console.error(`Failed to subscribe to session ${sessionId} output:`, error);
     }
@@ -392,6 +433,18 @@ export class TelegramBot {
     if (unsubscribe) {
       unsubscribe();
       this.outputUnsubscribers.delete(sessionId);
+    }
+
+    const errorUnsubscribe = this.errorUnsubscribers.get(sessionId);
+    if (errorUnsubscribe) {
+      errorUnsubscribe();
+      this.errorUnsubscribers.delete(sessionId);
+    }
+
+    const closeUnsubscribe = this.closeUnsubscribers.get(sessionId);
+    if (closeUnsubscribe) {
+      closeUnsubscribe();
+      this.closeUnsubscribers.delete(sessionId);
     }
   }
 
@@ -415,6 +468,61 @@ export class TelegramBot {
         await this.bot.telegram.sendMessage(chatId, truncatedText);
       } catch (error) {
         console.error(`Failed to send text to chat ${chatId}:`, error);
+      }
+    }
+  }
+
+  /**
+   * Forward error messages to all connected users with emoji indicator
+   */
+  private async forwardErrorToUsers(errorMessage: string): Promise<void> {
+    if (!errorMessage || errorMessage.trim().length === 0) {
+      return;
+    }
+
+    const formattedError = `⚠️ ${errorMessage}`;
+
+    for (const [_userId, chatId] of this.userChatIds.entries()) {
+      try {
+        await this.bot.telegram.sendMessage(chatId, formattedError);
+      } catch (error) {
+        console.error(`Failed to send error to chat ${chatId}:`, error);
+      }
+    }
+  }
+
+  /**
+   * Forward status messages to all connected users with emoji indicator
+   */
+  private async forwardStatusToUsers(statusMessage: string): Promise<void> {
+    if (!statusMessage || statusMessage.trim().length === 0) {
+      return;
+    }
+
+    const formattedStatus = `ℹ️ ${statusMessage}`;
+
+    for (const [_userId, chatId] of this.userChatIds.entries()) {
+      try {
+        await this.bot.telegram.sendMessage(chatId, formattedStatus);
+      } catch (error) {
+        console.error(`Failed to send status to chat ${chatId}:`, error);
+      }
+    }
+  }
+
+  /**
+   * Forward progress messages to all connected users (tool execution progress)
+   */
+  private async forwardProgressToUsers(progressMessage: string): Promise<void> {
+    if (!progressMessage || progressMessage.trim().length === 0) {
+      return;
+    }
+
+    for (const [_userId, chatId] of this.userChatIds.entries()) {
+      try {
+        await this.bot.telegram.sendMessage(chatId, progressMessage);
+      } catch (error) {
+        console.error(`Failed to send progress to chat ${chatId}:`, error);
       }
     }
   }

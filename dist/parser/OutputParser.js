@@ -151,6 +151,23 @@ export class OutputParser extends EventEmitter {
                 // Check if it's a tool call and emit tool_call event
                 if (this.detectToolCall(output)) {
                     this.emit('tool_call', output);
+                    // Emit progress event for tool executions (not questions)
+                    const toolUse = output;
+                    if (toolUse.name !== 'AskUserQuestion') {
+                        this.emit('progress', { type: 'tool_start', toolName: toolUse.name });
+                    }
+                }
+                // Emit progress event for tool results
+                if (output.type === 'tool_result') {
+                    const toolResult = output;
+                    this.emit('progress', {
+                        type: 'tool_end',
+                        success: !toolResult.is_error,
+                    });
+                }
+                // Emit thinking event when Claude starts processing
+                if (output.type === 'content_block_start') {
+                    this.emit('thinking');
                 }
             }
             catch {
