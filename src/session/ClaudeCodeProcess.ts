@@ -120,9 +120,10 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
       this.process = spawn(this.resolvedCliPath, args, {
         cwd: this.workingDir,
-        // stdin must be 'pipe' to allow answering AskUserQuestion prompts
-        // When Claude asks a question, we write the answer to stdin
-        stdio: ['pipe', 'pipe', 'pipe'],
+        // stdin is 'ignore' because --print mode doesn't support interactive input
+        // When Claude asks a question (AskUserQuestion), it gets auto-denied
+        // We detect the question in output and send the user's answer as a new message
+        stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...cleanEnv, FORCE_COLOR: '0' },
       });
 

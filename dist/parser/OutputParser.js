@@ -163,6 +163,7 @@ export class OutputParser extends EventEmitter {
                     const assistantOutput = output;
                     if (assistantOutput.message?.content) {
                         for (const block of assistantOutput.message.content) {
+                            // Emit text content
                             if (block.type === 'text' && block.text) {
                                 this.emit('text', block.text);
                             }

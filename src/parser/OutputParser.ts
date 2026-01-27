@@ -227,9 +227,11 @@ export class OutputParser extends EventEmitter {
           };
           if (assistantOutput.message?.content) {
             for (const block of assistantOutput.message.content) {
+              // Emit text content
               if (block.type === 'text' && block.text) {
                 this.emit('text', block.text);
               }
+
               // Check for tool_use blocks (e.g., AskUserQuestion)
               if (block.type === 'tool_use' && block.name) {
                 const toolUseBlock = block as ToolUseOutput;

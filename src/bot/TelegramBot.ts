@@ -429,16 +429,10 @@ export class TelegramBot {
           if (question && question.options[optionIndex]) {
             const selectedOption = question.options[optionIndex];
 
-            // Write the selection to Claude's stdin (for AskUserQuestion responses)
-            // This is different from sendToActiveSession which spawns a new message
-            if (this.sessionManager.hasActiveProcess()) {
-              console.log(`[Answer] Writing answer to stdin: "${selectedOption.label}"`);
-              this.sessionManager.writeToActiveSession(selectedOption.label);
-            } else {
-              // Fallback: send as new message if no active process
-              console.log(`[Answer] No active process, sending as new message: "${selectedOption.label}"`);
-              this.sessionManager.sendToActiveSession(selectedOption.label);
-            }
+            // Send the answer as a new message to Claude using --resume
+            // This continues the conversation with the user's answer
+            console.log(`[Answer] Sending answer as new message: "${selectedOption.label}"`);
+            this.sessionManager.sendToActiveSession(selectedOption.label);
 
             await ctx.answerCbQuery(`Selected: ${selectedOption.label}`);
             await ctx.editMessageText(
@@ -493,15 +487,9 @@ export class TelegramBot {
           this.awaitingCustomInput.delete(chatId);
           this.pendingQuestions.delete(chatId);
 
-          // Write custom response to Claude's stdin (for AskUserQuestion)
-          if (this.sessionManager.hasActiveProcess()) {
-            console.log(`[CustomAnswer] Writing to stdin: "${text}"`);
-            this.sessionManager.writeToActiveSession(text);
-          } else {
-            // Fallback: send as new message
-            console.log(`[CustomAnswer] No active process, sending as new message: "${text}"`);
-            this.sessionManager.sendToActiveSession(text);
-          }
+          // Send custom response as a new message to Claude
+          console.log(`[CustomAnswer] Sending as new message: "${text}"`);
+          this.sessionManager.sendToActiveSession(text);
           await ctx.reply(`Sent: "${text}"`);
         } else {
           // Send to Claude session
@@ -540,31 +528,19 @@ export class TelegramBot {
     });
 
     // Listen for progress events (tool executions)
+    // Only show failures to reduce noise - successes are implied
     this.outputParser.on('progress', (progress: { type: string; toolName?: string; success?: boolean }) => {
-      if (progress.type === 'tool_start' && progress.toolName) {
-        this.forwardProgressToUsers(`🔧 Running: ${progress.toolName}`);
-      } else if (progress.type === 'tool_end') {
-        if (progress.success) {
-          this.forwardProgressToUsers('✅ Done');
-        } else {
-          this.forwardProgressToUsers('❌ Failed');
-        }
+      if (progress.type === 'tool_end' && !progress.success) {
+        this.forwardProgressToUsers('❌ Tool execution failed');
       }
+      // Skip tool_start and success messages to reduce noise
     });
 
-    // Listen for thinking events (debounced)
-    this.outputParser.on('thinking', () => {
-      const now = Date.now();
-      if (now - this.lastThinkingMessageTime >= TelegramBot.THINKING_DEBOUNCE_MS) {
-        this.lastThinkingMessageTime = now;
-        this.forwardProgressToUsers('💭 Thinking...');
-      }
-    });
+    // Skip thinking events - they add too much noise
+    // this.outputParser.on('thinking', () => { ... });
 
-    // Listen for 'started' event when Claude begins processing
-    this.outputParser.on('started', () => {
-      this.forwardProgressToUsers('🚀 Claude started processing...');
-    });
+    // Skip 'started' event - the user knows they sent a message
+    // this.outputParser.on('started', () => { ... });
   }
 
   /**
