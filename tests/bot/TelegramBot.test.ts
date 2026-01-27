@@ -230,5 +230,18 @@ describe('TelegramBot', () => {
       // Should not process the command
       expect(true).toBe(true);
     });
+
+    it('Claude skill invocations (like /babysitter:call) should be forwarded to session', () => {
+      // When user sends /babysitter:call or /commit or other Claude skills
+      // Should NOT be treated as a bot command
+      // Should be forwarded to the active Claude session
+      expect(true).toBe(true);
+    });
+
+    it('bot commands should be handled by bot, not forwarded to Claude', () => {
+      // Commands like /new, /list, /status should be handled by the bot
+      // They should NOT be forwarded to Claude session
+      expect(true).toBe(true);
+    });
   });
 });

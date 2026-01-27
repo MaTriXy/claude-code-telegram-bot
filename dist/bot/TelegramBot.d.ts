@@ -32,6 +32,10 @@ export declare class TelegramBot {
      */
     private setupCallbackHandlers;
     /**
+     * Check if a message is a bot command (vs a Claude skill invocation)
+     */
+    private isBotCommand;
+    /**
      * Set up message handlers for text input
      */
     private setupMessageHandlers;

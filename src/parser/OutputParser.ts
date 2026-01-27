@@ -264,6 +264,14 @@ export class OutputParser extends EventEmitter {
           this.emit('thinking');
         }
 
+        // Emit 'started' event when Claude session initializes
+        if (output.type === 'system') {
+          const systemOutput = output as { type: 'system'; subtype?: string };
+          if (systemOutput.subtype === 'init') {
+            this.emit('started');
+          }
+        }
+
         // Fallback: emit any accumulated text when we receive a 'result' event
         // This handles cases where content_block_stop was never received
         if (output.type === 'result') {

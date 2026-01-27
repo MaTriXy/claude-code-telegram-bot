@@ -1,6 +1,10 @@
 import { Telegraf } from 'telegraf';
 import { SessionManager } from '../session/SessionManager.js';
 import { OutputParser } from '../parser/OutputParser.js';
+// Bot commands that are handled by the Telegram bot itself (not forwarded to Claude)
+const BOT_COMMANDS = new Set([
+    'start', 'help', 'new', 'cd', 'list', 'switch', 'close', 'status', 'abort'
+]);
 /**
  * Telegram bot for remote Claude Code operation
  */
@@ -280,13 +284,28 @@ export class TelegramBot {
         });
     }
     /**
+     * Check if a message is a bot command (vs a Claude skill invocation)
+     */
+    isBotCommand(text) {
+        if (!text.startsWith('/'))
+            return false;
+        // Extract command name from "/command" or "/command@botname" or "/command args"
+        const match = text.match(/^\/([a-zA-Z0-9_]+)/);
+        if (!match)
+            return false;
+        const commandName = match[1].toLowerCase();
+        return BOT_COMMANDS.has(commandName);
+    }
+    /**
      * Set up message handlers for text input
      */
     setupMessageHandlers() {
         this.bot.on('text', async (ctx) => {
             const text = ctx.message.text;
-            // Skip if it's a command
-            if (text.startsWith('/'))
+            // Skip only if it's a registered bot command (like /new, /list, etc.)
+            // Other slash commands (like /babysitter:call, /commit) are Claude skills
+            // and should be forwarded to Claude
+            if (this.isBotCommand(text))
                 return;
             const chatId = ctx.chat.id;
             try {
@@ -299,7 +318,7 @@ export class TelegramBot {
                     await ctx.reply(`Sent: "${text}"`);
                 }
                 else {
-                    // Regular prompt to Claude
+                    // Regular prompt to Claude (including Claude skill invocations like /babysitter:call)
                     this.sessionManager.sendToActiveSession(text);
                     await ctx.reply('Sent to Claude session.');
                 }
@@ -348,6 +367,10 @@ export class TelegramBot {
                 this.lastThinkingMessageTime = now;
                 this.forwardProgressToUsers('💭 Thinking...');
             }
+        });
+        // Listen for 'started' event when Claude begins processing
+        this.outputParser.on('started', () => {
+            this.forwardProgressToUsers('🚀 Claude started processing...');
         });
     }
     /**
