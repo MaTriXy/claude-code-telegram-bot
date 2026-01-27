@@ -93,6 +93,7 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
       // --verbose: required for stream-json output format
       // --resume: continue previous session (for follow-up messages)
       const args = [
+        '--dangerously-skip-permissions',
         '--print',
         '--verbose',
         '--output-format', 'stream-json',
