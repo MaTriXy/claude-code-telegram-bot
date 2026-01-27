@@ -70,40 +70,41 @@ export class TelegramBot {
     setupCommands() {
         // /start - Welcome message
         this.bot.command('start', async (ctx) => {
-            await ctx.reply('🤖 *Welcome to Claude Code Bot\\!*\n\n' +
-                'Control Claude Code CLI remotely from Telegram\\.\n\n' +
-                '*Commands:*\n' +
-                '/new <name> \\[dir\\] \\- Create new session\n' +
-                '/cd <path> \\- Change directory\n' +
-                '/list \\- List all sessions\n' +
-                '/switch <id> \\- Switch to session\n' +
-                '/close <id> \\- Close session\n' +
-                '/status \\- Current session info\n' +
-                '/help \\- Full command list\n\n' +
-                'Send any text to interact with the active Claude session\\.\n\n' +
+            await ctx.reply('🤖 Welcome to Claude Code Bot!\n\n' +
+                'Control Claude Code CLI remotely from Telegram.\n\n' +
+                'Commands:\n' +
+                '/new <name> [dir] - Create new session\n' +
+                '/cd <path> - Change directory\n' +
+                '/list - List all sessions\n' +
+                '/switch <id> - Switch to session\n' +
+                '/close <id> - Close session\n' +
+                '/status - Current session info\n' +
+                '/help - Full command list\n\n' +
+                'Send any text to interact with the active Claude session.\n\n' +
                 '═══════════════════════════════\n' +
-                '🧙 *100% Built using Babysitter*\n' +
-                '      by [a5c\\.ai](https://a5c.ai)\n' +
-                '═══════════════════════════════', { parse_mode: 'MarkdownV2' });
+                '🧙 100% Built using Babysitter\n' +
+                '      by a5c.ai - https://a5c.ai\n' +
+                '═══════════════════════════════');
         });
         // /help - Show help
         this.bot.command('help', async (ctx) => {
-            await ctx.reply('*Claude Code Bot Commands*\n\n' +
-                '*Session Management:*\n' +
-                '/new <name> \\[workingDir\\] \\- Create a new session\n' +
-                '/sessions \\- List existing Claude sessions on system\n' +
-                '/attach <id> \\[dir\\] \\- Attach to existing session\n' +
-                '/list \\- List active Telegram sessions\n' +
-                '/switch <id> \\- Switch to a different session\n' +
-                '/close <id> \\- Close and terminate a session\n' +
-                '/status \\- Show current session details\n' +
-                '/cd <path> \\- Change working directory\n\n' +
-                '*Control:*\n' +
-                '/abort \\- Abort current operation \\(Ctrl\\+C\\)\n' +
-                '/kill \\- Force kill current process\n\n' +
-                'When Claude asks questions, use the inline buttons or type a custom response\\.\n\n' +
+            await ctx.reply('Claude Code Bot Commands\n\n' +
+                'Session Management:\n' +
+                '/new <name> [workingDir] - Create a new session\n' +
+                '/sessions - List existing Claude sessions on system\n' +
+                '/attach <id> [dir] - Attach to existing session\n' +
+                '/list - List active Telegram sessions\n' +
+                '/switch <id> - Switch to a different session\n' +
+                '/close <id> - Close and terminate a session\n' +
+                '/status - Show current session details\n' +
+                '/cd <path> - Change working directory\n\n' +
+                'Control:\n' +
+                '/abort - Abort current operation (Ctrl+C)\n' +
+                '/kill - Force kill current process\n\n' +
+                'When Claude asks questions, use the inline buttons or type a custom response.\n\n' +
                 '═══════════════════════════════\n' +
-                '🧙 _100% Built using Babysitter by [a5c\\.ai](https://a5c.ai)_', { parse_mode: 'MarkdownV2' });
+                '🧙 100% Built using Babysitter\n' +
+                '      by a5c.ai - https://a5c.ai');
         });
         // /new - Create new session
         this.bot.command('new', async (ctx) => {
