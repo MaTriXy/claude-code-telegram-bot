@@ -107,9 +107,28 @@ export class TelegramBot {
     // /new - Create new session
     this.bot.command('new', async (ctx) => {
       try {
-        const args = ctx.message.text.split(' ').slice(1);
-        const name = args[0] || `session-${Date.now()}`;
-        const workingDir = args[1];
+        // Parse command: /new <name> [workingDir]
+        // Working dir is optional and can contain spaces if quoted
+        const fullText = ctx.message.text;
+        const withoutCommand = fullText.replace(/^\/new\s*/, '').trim();
+
+        let name: string;
+        let workingDir: string | undefined;
+
+        if (!withoutCommand) {
+          // No args: /new
+          name = `session-${Date.now()}`;
+          workingDir = undefined;
+        } else {
+          // Split by spaces, first arg is name
+          const parts = withoutCommand.split(/\s+/);
+          name = parts[0];
+          // Rest is working dir (join back in case path has spaces)
+          workingDir = parts.length > 1 ? parts.slice(1).join(' ') : undefined;
+        }
+
+        // Only use workingDir if it's actually provided (not empty string)
+        const effectiveWorkingDir = workingDir && workingDir.trim() ? workingDir.trim() : undefined;
 
         // Check if session with same name exists - close it first
         const existingSessions = this.sessionManager.listSessions();
@@ -121,7 +140,7 @@ export class TelegramBot {
           await ctx.reply(`Closed existing session "${name}"`);
         }
 
-        const session = await this.sessionManager.createSession(name, workingDir);
+        const session = await this.sessionManager.createSession(name, effectiveWorkingDir);
 
         // Subscribe to session output
         this.subscribeToSessionOutput(session.id);
