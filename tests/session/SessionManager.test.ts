@@ -7,6 +7,12 @@ import { ClaudeCodeProcess } from '../../src/session/ClaudeCodeProcess.js';
 // Mock ClaudeCodeProcess
 jest.mock('../../src/session/ClaudeCodeProcess.js');
 
+// Mock fs functions to allow any path in tests
+jest.mock('fs', () => ({
+  existsSync: jest.fn(() => true),
+  statSync: jest.fn(() => ({ isDirectory: () => true })),
+}));
+
 /**
  * Creates a mock ClaudeCodeProcess instance
  */

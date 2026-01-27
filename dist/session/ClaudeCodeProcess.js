@@ -1,5 +1,12 @@
 import { EventEmitter } from 'events';
 import { spawn } from 'child_process';
+import { existsSync } from 'fs';
+// Common paths where claude CLI might be installed
+const COMMON_CLAUDE_PATHS = [
+    '/opt/homebrew/bin/claude', // macOS Homebrew (Apple Silicon)
+    '/usr/local/bin/claude', // macOS Homebrew (Intel) / Linux
+    '/usr/bin/claude', // Linux system-wide
+];
 /**
  * Wraps a Claude Code CLI process for interaction
  */
@@ -9,14 +16,35 @@ export class ClaudeCodeProcess extends EventEmitter {
     process = null;
     _isRunning = false;
     outputBuffer = '';
+    resolvedCliPath;
     constructor(workingDir, cliPath = 'claude') {
         super();
         this.workingDir = workingDir;
         this.cliPath = cliPath;
+        this.resolvedCliPath = this.resolveCliPath(cliPath);
         this.spawn();
     }
     get isRunning() {
         return this._isRunning;
+    }
+    /**
+     * Resolve the CLI path - if it's just 'claude', try to find it in common locations
+     */
+    resolveCliPath(cliPath) {
+        // If it's an absolute path and exists, use it
+        if (cliPath.startsWith('/') && existsSync(cliPath)) {
+            return cliPath;
+        }
+        // If it's just 'claude', try common paths
+        if (cliPath === 'claude') {
+            for (const commonPath of COMMON_CLAUDE_PATHS) {
+                if (existsSync(commonPath)) {
+                    return commonPath;
+                }
+            }
+        }
+        // Fall back to the provided path (will fail with a clear error if not found)
+        return cliPath;
     }
     /**
      * Spawn the Claude Code CLI process
@@ -24,7 +52,7 @@ export class ClaudeCodeProcess extends EventEmitter {
     spawn() {
         try {
             // Spawn claude with stream-json output format for parseable output
-            this.process = spawn(this.cliPath, ['--output-format', 'stream-json'], {
+            this.process = spawn(this.resolvedCliPath, ['--output-format', 'stream-json'], {
                 cwd: this.workingDir,
                 stdio: ['pipe', 'pipe', 'pipe'],
                 env: { ...process.env },
@@ -58,10 +86,19 @@ export class ClaudeCodeProcess extends EventEmitter {
                 }
                 this.emit('close', code);
             });
-            // Handle process errors
+            // Handle process errors (like ENOENT)
             this.process.on('error', (error) => {
                 this._isRunning = false;
-                this.emit('error', error);
+                // Provide more helpful error messages
+                if (error.code === 'ENOENT') {
+                    const helpfulError = new Error(`Claude CLI not found at '${this.resolvedCliPath}'. ` +
+                        `Please install Claude Code CLI or set CLAUDE_CLI_PATH in .env to the correct path. ` +
+                        `Tried paths: ${COMMON_CLAUDE_PATHS.join(', ')}`);
+                    this.emit('error', helpfulError);
+                }
+                else {
+                    this.emit('error', error);
+                }
             });
         }
         catch (error) {

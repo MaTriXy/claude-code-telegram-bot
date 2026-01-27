@@ -4,6 +4,12 @@ import { SessionManager } from '../../src/session/SessionManager.js';
 import { OutputParser } from '../../src/parser/OutputParser.js';
 import type { Session, ParsedQuestion, ClaudeOutput, ToolUseOutput } from '../../src/types/index.js';
 
+// Mock fs functions to allow any path in tests
+jest.mock('fs', () => ({
+  existsSync: jest.fn(() => true),
+  statSync: jest.fn(() => ({ isDirectory: () => true })),
+}));
+
 // Mock ClaudeCodeProcess
 jest.mock('../../src/session/ClaudeCodeProcess.js', () => {
   return {

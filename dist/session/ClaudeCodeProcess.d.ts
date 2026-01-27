@@ -14,8 +14,13 @@ export declare class ClaudeCodeProcess extends EventEmitter implements ClaudeCod
     private process;
     private _isRunning;
     private outputBuffer;
+    private resolvedCliPath;
     constructor(workingDir: string, cliPath?: string);
     get isRunning(): boolean;
+    /**
+     * Resolve the CLI path - if it's just 'claude', try to find it in common locations
+     */
+    private resolveCliPath;
     /**
      * Spawn the Claude Code CLI process
      */

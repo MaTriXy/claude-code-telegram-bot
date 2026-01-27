@@ -1,4 +1,5 @@
 import { ulid } from 'ulid';
+import { existsSync, statSync } from 'fs';
 import { ClaudeCodeProcess } from './ClaudeCodeProcess.js';
 /**
  * Manages Claude Code CLI sessions
@@ -19,6 +20,22 @@ export class SessionManager {
     async createSession(name, workingDir) {
         const id = ulid();
         const sessionWorkingDir = workingDir || this.config.defaultWorkingDir || process.cwd();
+        // Validate working directory exists and is a directory
+        if (!existsSync(sessionWorkingDir)) {
+            throw new Error(`Working directory does not exist: ${sessionWorkingDir}`);
+        }
+        try {
+            const stats = statSync(sessionWorkingDir);
+            if (!stats.isDirectory()) {
+                throw new Error(`Path is not a directory: ${sessionWorkingDir}`);
+            }
+        }
+        catch (error) {
+            if (error instanceof Error && error.message.includes('Path is not a directory')) {
+                throw error;
+            }
+            throw new Error(`Cannot access working directory: ${sessionWorkingDir}`);
+        }
         // Create the Claude Code process
         const cliProcess = new ClaudeCodeProcess(sessionWorkingDir, this.config.claudeCliPath);
         const now = new Date();
@@ -205,6 +222,22 @@ export class SessionManager {
         const session = this.getInternalSession(sessionId);
         if (!session) {
             throw new Error(`Session not found: ${sessionId}`);
+        }
+        // Validate new working directory exists and is a directory
+        if (!existsSync(newWorkingDir)) {
+            throw new Error(`Working directory does not exist: ${newWorkingDir}`);
+        }
+        try {
+            const stats = statSync(newWorkingDir);
+            if (!stats.isDirectory()) {
+                throw new Error(`Path is not a directory: ${newWorkingDir}`);
+            }
+        }
+        catch (error) {
+            if (error instanceof Error && error.message.includes('Path is not a directory')) {
+                throw error;
+            }
+            throw new Error(`Cannot access working directory: ${newWorkingDir}`);
         }
         // Kill the current process
         session.process.kill();
