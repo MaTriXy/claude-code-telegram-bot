@@ -23,6 +23,8 @@ export class TelegramBot {
     closeUnsubscribers = new Map(); // sessionId -> close unsubscribe
     lastThinkingMessageTime = 0; // Debounce thinking messages
     static THINKING_DEBOUNCE_MS = 5000; // 5 seconds debounce
+    waitingForUserResponse = false; // True when a question is pending and we're waiting for user input
+    suppressedMessages = []; // Buffer messages while waiting for response
     constructor(config) {
         this.bot = new Telegraf(config.token);
         this.sessionManager = new SessionManager(config.sessionManagerConfig);
@@ -68,33 +70,40 @@ export class TelegramBot {
     setupCommands() {
         // /start - Welcome message
         this.bot.command('start', async (ctx) => {
-            await ctx.reply('Welcome to Claude Code Bot!\n\n' +
-                'Commands:\n' +
-                '/new <name> [dir] - Create new session\n' +
-                '/cd <path> - Change directory\n' +
-                '/list - List all sessions\n' +
-                '/switch <id> - Switch to session\n' +
-                '/close <id> - Close session\n' +
-                '/status - Current session info\n' +
-                '/help - Show this message\n\n' +
-                'Send any text to interact with the active Claude session.');
+            await ctx.reply('🤖 *Welcome to Claude Code Bot\\!*\n\n' +
+                'Control Claude Code CLI remotely from Telegram\\.\n\n' +
+                '*Commands:*\n' +
+                '/new <name> \\[dir\\] \\- Create new session\n' +
+                '/cd <path> \\- Change directory\n' +
+                '/list \\- List all sessions\n' +
+                '/switch <id> \\- Switch to session\n' +
+                '/close <id> \\- Close session\n' +
+                '/status \\- Current session info\n' +
+                '/help \\- Full command list\n\n' +
+                'Send any text to interact with the active Claude session\\.\n\n' +
+                '═══════════════════════════════\n' +
+                '🧙 *100% Built using Babysitter*\n' +
+                '      by [a5c\\.ai](https://a5c.ai)\n' +
+                '═══════════════════════════════', { parse_mode: 'MarkdownV2' });
         });
         // /help - Show help
         this.bot.command('help', async (ctx) => {
-            await ctx.reply('Claude Code Bot Commands:\n\n' +
+            await ctx.reply('*Claude Code Bot Commands*\n\n' +
                 '*Session Management:*\n' +
-                '/new <name> [workingDir] - Create a new session\n' +
-                '/sessions - List existing Claude sessions on system\n' +
-                '/attach <id> [dir] - Attach to existing session\n' +
-                '/list - List active Telegram sessions\n' +
-                '/switch <id> - Switch to a different session\n' +
-                '/close <id> - Close and terminate a session\n' +
-                '/status - Show current session details\n' +
-                '/cd <path> - Change working directory\n\n' +
+                '/new <name> \\[workingDir\\] \\- Create a new session\n' +
+                '/sessions \\- List existing Claude sessions on system\n' +
+                '/attach <id> \\[dir\\] \\- Attach to existing session\n' +
+                '/list \\- List active Telegram sessions\n' +
+                '/switch <id> \\- Switch to a different session\n' +
+                '/close <id> \\- Close and terminate a session\n' +
+                '/status \\- Show current session details\n' +
+                '/cd <path> \\- Change working directory\n\n' +
                 '*Control:*\n' +
-                '/abort - Abort current operation (Ctrl+C)\n' +
-                '/kill - Force kill current process\n\n' +
-                'When Claude asks questions, use the inline buttons or type a custom response.', { parse_mode: 'Markdown' });
+                '/abort \\- Abort current operation \\(Ctrl\\+C\\)\n' +
+                '/kill \\- Force kill current process\n\n' +
+                'When Claude asks questions, use the inline buttons or type a custom response\\.\n\n' +
+                '═══════════════════════════════\n' +
+                '🧙 _100% Built using Babysitter by [a5c\\.ai](https://a5c.ai)_', { parse_mode: 'MarkdownV2' });
         });
         // /new - Create new session
         this.bot.command('new', async (ctx) => {
@@ -129,6 +138,9 @@ export class TelegramBot {
                     await ctx.reply(`Closed existing session "${name}"`);
                 }
                 const session = await this.sessionManager.createSession(name, effectiveWorkingDir);
+                // Reset waiting state for new session
+                this.waitingForUserResponse = false;
+                this.suppressedMessages = [];
                 // Subscribe to session output
                 this.subscribeToSessionOutput(session.id);
                 await ctx.reply(`Session created!\n\n` +
@@ -308,6 +320,9 @@ export class TelegramBot {
                 const effectiveWorkingDir = workingDir || matchingSession.project;
                 // Attach to the session
                 const session = await this.sessionManager.attachToSession(matchingSession.projectName, matchingSession.sessionId, effectiveWorkingDir);
+                // Reset waiting state for new session
+                this.waitingForUserResponse = false;
+                this.suppressedMessages = [];
                 // Subscribe to session output
                 this.subscribeToSessionOutput(session.id);
                 await ctx.reply(`🔗 *Attached to existing session!*\n\n` +
@@ -350,6 +365,9 @@ export class TelegramBot {
                     const question = this.pendingQuestions.get(chatId);
                     if (question && question.options[optionIndex]) {
                         const selectedOption = question.options[optionIndex];
+                        // Resume normal message forwarding now that user has responded
+                        this.waitingForUserResponse = false;
+                        console.log('[Answer] User responded, resuming message forwarding');
                         // Send the answer as a new message to Claude using --resume
                         // This continues the conversation with the user's answer
                         console.log(`[Answer] Sending answer as new message: "${selectedOption.label}"`);
@@ -400,12 +418,22 @@ export class TelegramBot {
                 if (this.awaitingCustomInput.has(chatId)) {
                     this.awaitingCustomInput.delete(chatId);
                     this.pendingQuestions.delete(chatId);
+                    // Resume normal message forwarding now that user has responded
+                    this.waitingForUserResponse = false;
+                    console.log('[CustomAnswer] User responded, resuming message forwarding');
                     // Send custom response as a new message to Claude
                     console.log(`[CustomAnswer] Sending as new message: "${text}"`);
                     this.sessionManager.sendToActiveSession(text);
                     await ctx.reply(`Sent: "${text}"`);
                 }
                 else {
+                    // If user sends a new message while a question was pending, clear the waiting state
+                    // This handles the case where user ignores the question and sends something else
+                    if (this.waitingForUserResponse) {
+                        console.log('[Message] User sent new message, clearing pending question state');
+                        this.waitingForUserResponse = false;
+                        this.pendingQuestions.delete(chatId);
+                    }
                     // Send to Claude session
                     this.sessionManager.sendToActiveSession(text);
                     // Provide appropriate feedback based on what was sent
@@ -430,10 +458,22 @@ export class TelegramBot {
         // Listen for questions from OutputParser
         this.outputParser.on('question', (question) => {
             console.log('[OutputParser] Question event received:', question.question.substring(0, 50));
+            // Set flag to suppress subsequent messages until user responds
+            this.waitingForUserResponse = true;
+            this.suppressedMessages = []; // Clear any previously suppressed messages
             this.forwardQuestionToUsers(question);
         });
         // Listen for text output (accumulated from streaming deltas)
         this.outputParser.on('text', (text) => {
+            // Skip if waiting for user to respond to a question
+            if (this.waitingForUserResponse) {
+                console.log('[OutputParser] Suppressing text while waiting for user response');
+                // Optionally buffer important messages (but for now, just log)
+                if (text && text.trim()) {
+                    this.suppressedMessages.push(text.trim());
+                }
+                return;
+            }
             // Forward assistant text messages to users
             if (text && text.trim()) {
                 this.forwardTextToUsers(text);
@@ -442,6 +482,11 @@ export class TelegramBot {
         // Listen for progress events (tool executions)
         // Only show failures to reduce noise - successes are implied
         this.outputParser.on('progress', (progress) => {
+            // Skip if waiting for user to respond to a question
+            if (this.waitingForUserResponse) {
+                console.log('[OutputParser] Suppressing progress while waiting for user response');
+                return;
+            }
             if (progress.type === 'tool_end' && !progress.success) {
                 this.forwardProgressToUsers('❌ Tool execution failed');
             }

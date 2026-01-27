@@ -4,6 +4,7 @@
 [![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue.svg)](https://www.typescriptlang.org/)
 [![Telegraf](https://img.shields.io/badge/Telegraf-4.16-blue.svg)](https://telegraf.js.org/)
+[![100% Built with Babysitter](https://img.shields.io/badge/100%25%20Built%20with-Babysitter%20🧙-blueviolet)](https://a5c.ai)
 
 A Telegram bot that bridges your mobile device with Anthropic's Claude Code CLI, enabling remote operation from anywhere. Create sessions, manage multiple projects, and interact with Claude's agentic coding capabilities directly through Telegram.
 
@@ -569,3 +570,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 **Note:** This project is not officially affiliated with Anthropic. Claude Code is a product of Anthropic.
+
+---
+
+🧙 **100% Built using [Babysitter](https://github.com/a5c-ai/babysitter) by [a5c.ai](https://a5c.ai)** - AI-powered development orchestration.

@@ -348,5 +348,9 @@ User <- TelegramBot <- OutputParser <- Streaming JSON Output
 
 ---
 
+🧙 **100% Built using [Babysitter](https://a5c.ai) by a5c.ai** - AI-powered development orchestration.
+
+---
+
 *Generated: 2026-01-27*
 *Source: Codebase analysis of Claude Code Telegram Bot*

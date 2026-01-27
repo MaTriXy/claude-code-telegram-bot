@@ -19,6 +19,8 @@ export declare class TelegramBot {
     private closeUnsubscribers;
     private lastThinkingMessageTime;
     private static readonly THINKING_DEBOUNCE_MS;
+    private waitingForUserResponse;
+    private suppressedMessages;
     constructor(config: TelegramBotConfig);
     /**
      * Set up authorization middleware

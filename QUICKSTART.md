@@ -55,3 +55,7 @@ npm run build && npm start
 **Bot not responding?** Check your user ID is in `ALLOWED_USER_IDS`
 
 **Claude not working?** Verify `claude --version` works in terminal
+
+---
+
+🧙 **100% Built using [Babysitter](https://a5c.ai) by a5c.ai**
