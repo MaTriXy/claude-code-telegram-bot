@@ -381,6 +381,8 @@ export class TelegramBot {
 
     // Listen for text output (accumulated from streaming deltas)
     this.outputParser.on('text', (text: string) => {
+      console.log('[DEBUG] OutputParser text event:', text.substring(0, 80));
+      console.log('[DEBUG] userChatIds size:', this.userChatIds.size);
       // Forward assistant text messages to users
       if (text && text.trim()) {
         this.forwardTextToUsers(text);
@@ -419,8 +421,12 @@ export class TelegramBot {
 
     try {
       // Get the session's process output and pipe it to the parser
+      // NOTE: ClaudeCodeProcess emits lines WITHOUT trailing newlines,
+      // but OutputParser.parseStreamOutput() buffers and splits by '\n',
+      // so we must add the newline for lines to be processed.
       const unsubscribe = this.sessionManager.onSessionOutput(sessionId, (data: string) => {
-        this.outputParser.parseStreamOutput(data);
+        console.log('[DEBUG] Session output received:', data.substring(0, 80));
+        this.outputParser.parseStreamOutput(data + '\n');
       });
       this.outputUnsubscribers.set(sessionId, unsubscribe);
 
@@ -471,8 +477,12 @@ export class TelegramBot {
    * Forward text output to all connected users
    */
   private async forwardTextToUsers(text: string): Promise<void> {
+    console.log('[DEBUG] forwardTextToUsers called with:', text.substring(0, 50));
+    console.log('[DEBUG] userChatIds:', Array.from(this.userChatIds.entries()));
+
     // Skip empty or very short messages
     if (!text || text.trim().length === 0) {
+      console.log('[DEBUG] Skipping empty text');
       return;
     }
 
@@ -484,7 +494,9 @@ export class TelegramBot {
 
     for (const [_userId, chatId] of this.userChatIds.entries()) {
       try {
+        console.log('[DEBUG] Sending to chatId:', chatId);
         await this.bot.telegram.sendMessage(chatId, truncatedText);
+        console.log('[DEBUG] Message sent successfully');
       } catch (error) {
         console.error(`Failed to send text to chat ${chatId}:`, error);
       }

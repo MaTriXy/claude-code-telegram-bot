@@ -198,6 +198,14 @@ export class OutputParser extends EventEmitter {
                 if (output.type === 'content_block_start') {
                     this.emit('thinking');
                 }
+                // Fallback: emit any accumulated text when we receive a 'result' event
+                // This handles cases where content_block_stop was never received
+                if (output.type === 'result') {
+                    if (this.currentTextContent.trim()) {
+                        this.emit('text', this.currentTextContent);
+                        this.currentTextContent = '';
+                    }
+                }
             }
             catch {
                 // Invalid JSON line, skip it
@@ -207,10 +215,11 @@ export class OutputParser extends EventEmitter {
         return results;
     }
     /**
-     * Reset the internal buffer
+     * Reset the internal buffer and accumulated text content
      */
     resetBuffer() {
         this.buffer = '';
+        this.currentTextContent = '';
     }
 }
 //# sourceMappingURL=OutputParser.js.map

@@ -98,16 +98,32 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
       // Add the prompt
       args.push(prompt);
 
+      console.log('[DEBUG] Spawning Claude CLI:', this.resolvedCliPath, args.join(' '));
+
+      // Create a clean environment without Claude session-related variables
+      // The parent process may be running inside Claude Code which sets various
+      // environment variables that could conflict with spawning a new Claude CLI process
+      const cleanEnv = { ...process.env };
+      // Remove session/entrypoint variables that could cause the child to think
+      // it's part of the parent Claude session
+      delete cleanEnv.CLAUDE_SESSION_ID;
+      delete cleanEnv.CLAUDECODE;
+      delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
+      // Note: Keep CLAUDE_CODE_USE_FOUNDRY as it may be needed for authentication
+
       this.process = spawn(this.resolvedCliPath, args, {
         cwd: this.workingDir,
         // IMPORTANT: stdin must be 'ignore', not 'pipe'
         // When stdin is 'pipe', Claude CLI waits for input even in --print mode
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, FORCE_COLOR: '0' },
+        env: { ...cleanEnv, FORCE_COLOR: '0' },
       });
+
+      console.log('[DEBUG] Process spawned, PID:', this.process.pid);
 
       // Handle stdout
       this.process.stdout?.on('data', (data: Buffer) => {
+        console.log('[DEBUG] stdout data received, length:', data.length);
         const text = data.toString();
         this.outputBuffer += text;
 
@@ -144,6 +160,7 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
       // Handle process close
       this.process.on('close', (code) => {
+        console.log('[DEBUG] Process closed with code:', code);
         // Emit any remaining buffered output
         if (this.outputBuffer.trim()) {
           // Try to extract session_id from remaining buffer
@@ -174,6 +191,7 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
       // Handle process errors (like ENOENT)
       this.process.on('error', (error: NodeJS.ErrnoException) => {
+        console.log('[DEBUG] Process error:', error.message);
         // Provide more helpful error messages
         if (error.code === 'ENOENT') {
           const helpfulError = new Error(

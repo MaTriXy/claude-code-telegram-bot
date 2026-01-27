@@ -36,7 +36,7 @@ export declare class OutputParser extends EventEmitter {
      */
     parseStreamOutput(chunk: string): ClaudeOutput[];
     /**
-     * Reset the internal buffer
+     * Reset the internal buffer and accumulated text content
      */
     resetBuffer(): void;
 }

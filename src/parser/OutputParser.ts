@@ -263,6 +263,15 @@ export class OutputParser extends EventEmitter {
         if (output.type === 'content_block_start') {
           this.emit('thinking');
         }
+
+        // Fallback: emit any accumulated text when we receive a 'result' event
+        // This handles cases where content_block_stop was never received
+        if (output.type === 'result') {
+          if (this.currentTextContent.trim()) {
+            this.emit('text', this.currentTextContent);
+            this.currentTextContent = '';
+          }
+        }
       } catch {
         // Invalid JSON line, skip it
         // This can happen with partial output or non-JSON lines
@@ -273,9 +282,10 @@ export class OutputParser extends EventEmitter {
   }
 
   /**
-   * Reset the internal buffer
+   * Reset the internal buffer and accumulated text content
    */
   resetBuffer(): void {
     this.buffer = '';
+    this.currentTextContent = '';
   }
 }
