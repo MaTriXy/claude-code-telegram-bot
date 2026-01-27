@@ -41,6 +41,15 @@ export declare class ClaudeCodeProcess extends EventEmitter implements ClaudeCod
      */
     send(input: string): void;
     /**
+     * Write a response to stdin (for answering AskUserQuestion prompts)
+     * This is used when Claude asks a question and we need to provide the answer
+     */
+    writeToStdin(response: string): void;
+    /**
+     * Check if there's an active process that can receive stdin input
+     */
+    hasActiveProcess(): boolean;
+    /**
      * Kill the CLI process
      */
     kill(): void;

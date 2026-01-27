@@ -62,6 +62,15 @@ export declare class SessionManager {
      */
     killActiveProcess(): void;
     /**
+     * Write a response to the active session's stdin
+     * Used for answering AskUserQuestion prompts
+     */
+    writeToActiveSession(response: string): void;
+    /**
+     * Check if the active session has a process that can receive stdin
+     */
+    hasActiveProcess(): boolean;
+    /**
      * Subscribe to output events from the active session
      */
     onActiveSessionOutput(callback: (data: string) => void): () => void;

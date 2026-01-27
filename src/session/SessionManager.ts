@@ -268,6 +268,28 @@ export class SessionManager {
   }
 
   /**
+   * Write a response to the active session's stdin
+   * Used for answering AskUserQuestion prompts
+   */
+  writeToActiveSession(response: string): void {
+    const session = this.getActiveInternalSession();
+    if (!session) {
+      throw new Error('No active session');
+    }
+
+    session.process.writeToStdin(response);
+    session.lastActivity = new Date();
+  }
+
+  /**
+   * Check if the active session has a process that can receive stdin
+   */
+  hasActiveProcess(): boolean {
+    const session = this.getActiveInternalSession();
+    return session?.process.hasActiveProcess() ?? false;
+  }
+
+  /**
    * Subscribe to output events from the active session
    */
   onActiveSessionOutput(callback: (data: string) => void): () => void {

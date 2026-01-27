@@ -64,7 +64,11 @@ export class TelegramBot {
 
       // Store chat ID for this user
       if (ctx.chat) {
+        const wasNew = !this.userChatIds.has(userId);
         this.userChatIds.set(userId, ctx.chat.id);
+        if (wasNew) {
+          console.log(`[Auth] User ${userId} connected with chat ID ${ctx.chat.id}`);
+        }
       }
 
       await next();
@@ -425,8 +429,16 @@ export class TelegramBot {
           if (question && question.options[optionIndex]) {
             const selectedOption = question.options[optionIndex];
 
-            // Send the selection to Claude
-            this.sessionManager.sendToActiveSession(selectedOption.label);
+            // Write the selection to Claude's stdin (for AskUserQuestion responses)
+            // This is different from sendToActiveSession which spawns a new message
+            if (this.sessionManager.hasActiveProcess()) {
+              console.log(`[Answer] Writing answer to stdin: "${selectedOption.label}"`);
+              this.sessionManager.writeToActiveSession(selectedOption.label);
+            } else {
+              // Fallback: send as new message if no active process
+              console.log(`[Answer] No active process, sending as new message: "${selectedOption.label}"`);
+              this.sessionManager.sendToActiveSession(selectedOption.label);
+            }
 
             await ctx.answerCbQuery(`Selected: ${selectedOption.label}`);
             await ctx.editMessageText(
@@ -481,8 +493,15 @@ export class TelegramBot {
           this.awaitingCustomInput.delete(chatId);
           this.pendingQuestions.delete(chatId);
 
-          // Send custom response to Claude
-          this.sessionManager.sendToActiveSession(text);
+          // Write custom response to Claude's stdin (for AskUserQuestion)
+          if (this.sessionManager.hasActiveProcess()) {
+            console.log(`[CustomAnswer] Writing to stdin: "${text}"`);
+            this.sessionManager.writeToActiveSession(text);
+          } else {
+            // Fallback: send as new message
+            console.log(`[CustomAnswer] No active process, sending as new message: "${text}"`);
+            this.sessionManager.sendToActiveSession(text);
+          }
           await ctx.reply(`Sent: "${text}"`);
         } else {
           // Send to Claude session
@@ -508,6 +527,7 @@ export class TelegramBot {
   private setupOutputForwarding(): void {
     // Listen for questions from OutputParser
     this.outputParser.on('question', (question: ParsedQuestion) => {
+      console.log('[OutputParser] Question event received:', question.question.substring(0, 50));
       this.forwardQuestionToUsers(question);
     });
 
@@ -691,10 +711,19 @@ export class TelegramBot {
    * Forward a question to all connected users
    */
   private async forwardQuestionToUsers(question: ParsedQuestion): Promise<void> {
+    console.log(`[Question] Detected question: "${question.question.substring(0, 50)}..."`);
+    console.log(`[Question] Connected users: ${this.userChatIds.size}`);
+
+    if (this.userChatIds.size === 0) {
+      console.warn('[Question] No users connected to receive the question!');
+      return;
+    }
+
     const formatted = this.outputParser.formatForTelegram(question);
 
     for (const [userId, chatId] of this.userChatIds.entries()) {
       try {
+        console.log(`[Question] Sending to user ${userId} (chat ${chatId})`);
         // Store pending question for this chat
         this.pendingQuestions.set(chatId, question);
 
@@ -702,6 +731,7 @@ export class TelegramBot {
           parse_mode: formatted.parseMode,
           reply_markup: formatted.replyMarkup,
         });
+        console.log(`[Question] Successfully sent to chat ${chatId}`);
       } catch (error) {
         console.error(`Failed to send question to chat ${chatId}:`, error);
       }

@@ -32,6 +32,8 @@ export interface ClaudeCodeProcessInterface extends EventEmitter {
   readonly isRunning: boolean;
   send(input: string): void;
   kill(): void;
+  writeToStdin(response: string): void;
+  hasActiveProcess(): boolean;
 }
 
 /**

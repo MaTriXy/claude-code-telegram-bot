@@ -120,9 +120,9 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
       this.process = spawn(this.resolvedCliPath, args, {
         cwd: this.workingDir,
-        // IMPORTANT: stdin must be 'ignore', not 'pipe'
-        // When stdin is 'pipe', Claude CLI waits for input even in --print mode
-        stdio: ['ignore', 'pipe', 'pipe'],
+        // stdin must be 'pipe' to allow answering AskUserQuestion prompts
+        // When Claude asks a question, we write the answer to stdin
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...cleanEnv, FORCE_COLOR: '0' },
       });
 
@@ -228,6 +228,27 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
     // Spawn a new process for this message
     this.spawnForMessage(input);
+  }
+
+  /**
+   * Write a response to stdin (for answering AskUserQuestion prompts)
+   * This is used when Claude asks a question and we need to provide the answer
+   */
+  writeToStdin(response: string): void {
+    if (!this.process || !this.process.stdin) {
+      console.warn('[ClaudeCodeProcess] No active process or stdin to write to');
+      return;
+    }
+
+    console.log(`[ClaudeCodeProcess] Writing to stdin: "${response}"`);
+    this.process.stdin.write(response + '\n');
+  }
+
+  /**
+   * Check if there's an active process that can receive stdin input
+   */
+  hasActiveProcess(): boolean {
+    return this.process !== null && this.process.stdin !== null;
   }
 
   /**
