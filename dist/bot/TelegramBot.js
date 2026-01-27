@@ -1,9 +1,10 @@
 import { Telegraf } from 'telegraf';
 import { SessionManager } from '../session/SessionManager.js';
 import { OutputParser } from '../parser/OutputParser.js';
+import { ClaudeSessionScanner } from '../utils/ClaudeSessionScanner.js';
 // Bot commands that are handled by the Telegram bot itself (not forwarded to Claude)
 const BOT_COMMANDS = new Set([
-    'start', 'help', 'new', 'cd', 'list', 'switch', 'close', 'status', 'abort', 'kill'
+    'start', 'help', 'new', 'cd', 'list', 'switch', 'close', 'status', 'abort', 'kill', 'sessions', 'attach'
 ]);
 /**
  * Telegram bot for remote Claude Code operation
@@ -12,6 +13,7 @@ export class TelegramBot {
     bot;
     sessionManager;
     outputParser;
+    sessionScanner;
     allowedUsers;
     userChatIds = new Map(); // userId -> chatId
     pendingQuestions = new Map(); // chatId -> question
@@ -25,6 +27,7 @@ export class TelegramBot {
         this.bot = new Telegraf(config.token);
         this.sessionManager = new SessionManager(config.sessionManagerConfig);
         this.outputParser = new OutputParser();
+        this.sessionScanner = new ClaudeSessionScanner();
         this.allowedUsers = new Set(config.allowedUserIds);
         this.setupMiddleware();
         this.setupCommands();
@@ -75,15 +78,19 @@ export class TelegramBot {
         // /help - Show help
         this.bot.command('help', async (ctx) => {
             await ctx.reply('Claude Code Bot Commands:\n\n' +
-                '/new <name> [workingDir] - Create a new Claude Code session\n' +
-                '/cd <path> - Change working directory of current session\n' +
-                '/list - List all active sessions\n' +
-                '/switch <sessionId> - Switch to a different session\n' +
-                '/close <sessionId> - Close and terminate a session\n' +
+                '*Session Management:*\n' +
+                '/new <name> [workingDir] - Create a new session\n' +
+                '/sessions - List existing Claude sessions on system\n' +
+                '/attach <id> [dir] - Attach to existing session\n' +
+                '/list - List active Telegram sessions\n' +
+                '/switch <id> - Switch to a different session\n' +
+                '/close <id> - Close and terminate a session\n' +
                 '/status - Show current session details\n' +
-                '/abort - Abort current Claude operation\n' +
-                '/kill - Force kill the current Claude/Babysitter process\n\n' +
-                'When Claude asks questions, use the inline buttons or type a custom response.');
+                '/cd <path> - Change working directory\n\n' +
+                '*Control:*\n' +
+                '/abort - Abort current operation (Ctrl+C)\n' +
+                '/kill - Force kill current process\n\n' +
+                'When Claude asks questions, use the inline buttons or type a custom response.', { parse_mode: 'Markdown' });
         });
         // /new - Create new session
         this.bot.command('new', async (ctx) => {
@@ -251,6 +258,62 @@ export class TelegramBot {
             }
             catch (error) {
                 const message = error instanceof Error ? error.message : 'Failed to kill process';
+                await ctx.reply(`Error: ${message}`);
+            }
+        });
+        // /sessions - List existing Claude sessions on the system
+        this.bot.command('sessions', async (ctx) => {
+            try {
+                const recentSessions = this.sessionScanner.getRecentSessions(10);
+                if (recentSessions.length === 0) {
+                    await ctx.reply('No recent Claude sessions found on this system.');
+                    return;
+                }
+                let message = '🗂️ *Recent Claude Sessions*\n\n';
+                message += '_Use /attach <session-id> to connect_\n\n';
+                for (const session of recentSessions) {
+                    message += this.sessionScanner.formatSession(session) + '\n\n';
+                }
+                await ctx.reply(message, { parse_mode: 'Markdown' });
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : 'Failed to list sessions';
+                await ctx.reply(`Error: ${message}`);
+            }
+        });
+        // /attach - Attach to an existing Claude session
+        this.bot.command('attach', async (ctx) => {
+            try {
+                const args = ctx.message.text.split(' ').slice(1);
+                if (args.length === 0) {
+                    await ctx.reply('Usage: /attach <session-id> [working-dir]\n\n' +
+                        'Use /sessions to see available sessions.\n' +
+                        'You can use partial session IDs (first 8 characters).');
+                    return;
+                }
+                const partialId = args[0];
+                const workingDir = args.slice(1).join(' ') || undefined;
+                // Find matching session
+                const recentSessions = this.sessionScanner.getRecentSessions(100);
+                const matchingSession = recentSessions.find(s => s.sessionId.startsWith(partialId) || s.sessionId === partialId);
+                if (!matchingSession) {
+                    await ctx.reply(`No session found matching "${partialId}". Use /sessions to see available sessions.`);
+                    return;
+                }
+                // Use the session's project directory if no working dir specified
+                const effectiveWorkingDir = workingDir || matchingSession.project;
+                // Attach to the session
+                const session = await this.sessionManager.attachToSession(matchingSession.projectName, matchingSession.sessionId, effectiveWorkingDir);
+                // Subscribe to session output
+                this.subscribeToSessionOutput(session.id);
+                await ctx.reply(`🔗 *Attached to existing session!*\n\n` +
+                    `Session ID: \`${matchingSession.sessionId.substring(0, 8)}...\`\n` +
+                    `Project: ${matchingSession.projectName}\n` +
+                    `Directory: ${effectiveWorkingDir}\n\n` +
+                    `Send a message to continue this session.`, { parse_mode: 'Markdown' });
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : 'Failed to attach';
                 await ctx.reply(`Error: ${message}`);
             }
         });

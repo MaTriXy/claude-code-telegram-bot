@@ -21,11 +21,19 @@ export class ClaudeCodeProcess extends EventEmitter {
     resolvedCliPath;
     claudeSessionId = null; // Session ID returned by Claude CLI
     isFirstMessage = true;
-    constructor(workingDir, cliPath = 'claude') {
+    existingSessionId = null; // For attaching to existing sessions
+    constructor(workingDir, cliPath = 'claude', existingSessionId // Optional: attach to existing session
+    ) {
         super();
         this.workingDir = workingDir;
         this.cliPath = cliPath;
         this.resolvedCliPath = this.resolveCliPath(cliPath);
+        // If attaching to existing session, set it up
+        if (existingSessionId) {
+            this.existingSessionId = existingSessionId;
+            this.claudeSessionId = existingSessionId;
+            this.isFirstMessage = false; // Will use --resume from the start
+        }
         // Don't spawn immediately - wait for first input
         this._isRunning = true; // Mark as running so send() works
     }

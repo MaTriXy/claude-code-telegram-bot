@@ -158,12 +158,29 @@ export class OutputParser extends EventEmitter {
                 }
                 // Handle 'assistant' type messages from stream-json format
                 // Format: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+                // Can also contain tool_use blocks with questions
                 if (output.type === 'assistant') {
                     const assistantOutput = output;
                     if (assistantOutput.message?.content) {
                         for (const block of assistantOutput.message.content) {
                             if (block.type === 'text' && block.text) {
                                 this.emit('text', block.text);
+                            }
+                            // Check for tool_use blocks (e.g., AskUserQuestion)
+                            if (block.type === 'tool_use' && block.name) {
+                                const toolUseBlock = block;
+                                this.emit('tool_call', toolUseBlock);
+                                // Check if it's a question
+                                if (block.name === 'AskUserQuestion') {
+                                    const question = this.parseQuestion(toolUseBlock);
+                                    if (question) {
+                                        this.emit('question', question);
+                                    }
+                                }
+                                else {
+                                    // Emit progress event for other tool executions
+                                    this.emit('progress', { type: 'tool_start', toolName: block.name });
+                                }
                             }
                         }
                     }

@@ -9,6 +9,7 @@ export declare class TelegramBot {
     private bot;
     private sessionManager;
     private outputParser;
+    private sessionScanner;
     private allowedUsers;
     private userChatIds;
     private pendingQuestions;

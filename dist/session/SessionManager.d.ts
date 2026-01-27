@@ -12,6 +12,11 @@ export declare class SessionManager {
      */
     createSession(name: string, workingDir?: string): Promise<Session>;
     /**
+     * Attach to an existing Claude Code session by session ID
+     * This allows continuing a session that was started outside of Telegram
+     */
+    attachToSession(name: string, existingSessionId: string, workingDir?: string): Promise<Session>;
+    /**
      * Set up event handlers for a session
      */
     private setupSessionEventHandlers;

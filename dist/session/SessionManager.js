@@ -58,6 +58,51 @@ export class SessionManager {
         return this.toPublicSession(session);
     }
     /**
+     * Attach to an existing Claude Code session by session ID
+     * This allows continuing a session that was started outside of Telegram
+     */
+    async attachToSession(name, existingSessionId, workingDir) {
+        const id = ulid();
+        const sessionWorkingDir = workingDir || this.config.defaultWorkingDir || process.cwd();
+        // Validate working directory exists and is a directory
+        if (!existsSync(sessionWorkingDir)) {
+            throw new Error(`Working directory does not exist: ${sessionWorkingDir}`);
+        }
+        try {
+            const stats = statSync(sessionWorkingDir);
+            if (!stats.isDirectory()) {
+                throw new Error(`Path is not a directory: ${sessionWorkingDir}`);
+            }
+        }
+        catch (error) {
+            if (error instanceof Error && error.message.includes('Path is not a directory')) {
+                throw error;
+            }
+            throw new Error(`Cannot access working directory: ${sessionWorkingDir}`);
+        }
+        // Create the Claude Code process with existing session ID
+        const cliProcess = new ClaudeCodeProcess(sessionWorkingDir, this.config.claudeCliPath, existingSessionId // Pass existing session ID to resume
+        );
+        const now = new Date();
+        const session = {
+            id,
+            name: `${name} (attached)`,
+            workingDir: sessionWorkingDir,
+            status: 'idle',
+            createdAt: now,
+            lastActivity: now,
+            process: cliProcess,
+        };
+        // Store session
+        this.sessions.set(id, session);
+        // Set as active session
+        this.activeSessionId = id;
+        // Set up event handlers
+        this.setupSessionEventHandlers(session);
+        // Return session without process (public interface)
+        return this.toPublicSession(session);
+    }
+    /**
      * Set up event handlers for a session
      */
     setupSessionEventHandlers(session) {

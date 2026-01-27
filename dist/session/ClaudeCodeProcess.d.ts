@@ -19,7 +19,8 @@ export declare class ClaudeCodeProcess extends EventEmitter implements ClaudeCod
     private resolvedCliPath;
     private claudeSessionId;
     private isFirstMessage;
-    constructor(workingDir: string, cliPath?: string);
+    private existingSessionId;
+    constructor(workingDir: string, cliPath?: string, existingSessionId?: string);
     get isRunning(): boolean;
     /**
      * Get the Claude session ID (available after first message)
