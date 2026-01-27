@@ -52,6 +52,11 @@ export declare class SessionManager {
      */
     sendToActiveSession(input: string): void;
     /**
+     * Kill the active session's Claude process (hard stop)
+     * The session remains but the current process is terminated
+     */
+    killActiveProcess(): void;
+    /**
      * Subscribe to output events from the active session
      */
     onActiveSessionOutput(callback: (data: string) => void): () => void;

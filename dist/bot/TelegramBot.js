@@ -3,7 +3,7 @@ import { SessionManager } from '../session/SessionManager.js';
 import { OutputParser } from '../parser/OutputParser.js';
 // Bot commands that are handled by the Telegram bot itself (not forwarded to Claude)
 const BOT_COMMANDS = new Set([
-    'start', 'help', 'new', 'cd', 'list', 'switch', 'close', 'status', 'abort'
+    'start', 'help', 'new', 'cd', 'list', 'switch', 'close', 'status', 'abort', 'kill'
 ]);
 /**
  * Telegram bot for remote Claude Code operation
@@ -81,7 +81,8 @@ export class TelegramBot {
                 '/switch <sessionId> - Switch to a different session\n' +
                 '/close <sessionId> - Close and terminate a session\n' +
                 '/status - Show current session details\n' +
-                '/abort - Abort current Claude operation\n\n' +
+                '/abort - Abort current Claude operation\n' +
+                '/kill - Force kill the current Claude/Babysitter process\n\n' +
                 'When Claude asks questions, use the inline buttons or type a custom response.');
         });
         // /new - Create new session
@@ -236,6 +237,23 @@ export class TelegramBot {
                 await ctx.reply(`Error: ${message}`);
             }
         });
+        // /kill - Force kill the current Claude process (hard stop)
+        this.bot.command('kill', async (ctx) => {
+            try {
+                const activeSession = this.sessionManager.getActiveSession();
+                if (!activeSession) {
+                    await ctx.reply('No active session to kill.');
+                    return;
+                }
+                // Kill the process forcefully
+                this.sessionManager.killActiveProcess();
+                await ctx.reply('🔪 Killed! Claude/Babysitter process terminated.');
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : 'Failed to kill process';
+                await ctx.reply(`Error: ${message}`);
+            }
+        });
     }
     /**
      * Set up callback query handlers for inline buttons
@@ -345,8 +363,6 @@ export class TelegramBot {
         });
         // Listen for text output (accumulated from streaming deltas)
         this.outputParser.on('text', (text) => {
-            console.log('[DEBUG] OutputParser text event:', text.substring(0, 80));
-            console.log('[DEBUG] userChatIds size:', this.userChatIds.size);
             // Forward assistant text messages to users
             if (text && text.trim()) {
                 this.forwardTextToUsers(text);
@@ -391,7 +407,6 @@ export class TelegramBot {
             // but OutputParser.parseStreamOutput() buffers and splits by '\n',
             // so we must add the newline for lines to be processed.
             const unsubscribe = this.sessionManager.onSessionOutput(sessionId, (data) => {
-                console.log('[DEBUG] Session output received:', data.substring(0, 80));
                 this.outputParser.parseStreamOutput(data + '\n');
             });
             this.outputUnsubscribers.set(sessionId, unsubscribe);
@@ -439,11 +454,8 @@ export class TelegramBot {
      * Forward text output to all connected users
      */
     async forwardTextToUsers(text) {
-        console.log('[DEBUG] forwardTextToUsers called with:', text.substring(0, 50));
-        console.log('[DEBUG] userChatIds:', Array.from(this.userChatIds.entries()));
         // Skip empty or very short messages
         if (!text || text.trim().length === 0) {
-            console.log('[DEBUG] Skipping empty text');
             return;
         }
         // Truncate very long messages
@@ -453,9 +465,7 @@ export class TelegramBot {
             : text;
         for (const [_userId, chatId] of this.userChatIds.entries()) {
             try {
-                console.log('[DEBUG] Sending to chatId:', chatId);
                 await this.bot.telegram.sendMessage(chatId, truncatedText);
-                console.log('[DEBUG] Message sent successfully');
             }
             catch (error) {
                 console.error(`Failed to send text to chat ${chatId}:`, error);

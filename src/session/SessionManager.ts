@@ -196,6 +196,21 @@ export class SessionManager {
   }
 
   /**
+   * Kill the active session's Claude process (hard stop)
+   * The session remains but the current process is terminated
+   */
+  killActiveProcess(): void {
+    const session = this.getActiveInternalSession();
+    if (!session) {
+      throw new Error('No active session');
+    }
+
+    session.process.kill();
+    session.status = 'idle';
+    session.lastActivity = new Date();
+  }
+
+  /**
    * Subscribe to output events from the active session
    */
   onActiveSessionOutput(callback: (data: string) => void): () => void {

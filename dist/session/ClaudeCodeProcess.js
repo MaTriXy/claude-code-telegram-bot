@@ -79,7 +79,6 @@ export class ClaudeCodeProcess extends EventEmitter {
             }
             // Add the prompt
             args.push(prompt);
-            console.log('[DEBUG] Spawning Claude CLI:', this.resolvedCliPath, args.join(' '));
             // Create a clean environment without Claude session-related variables
             // The parent process may be running inside Claude Code which sets various
             // environment variables that could conflict with spawning a new Claude CLI process
@@ -97,10 +96,8 @@ export class ClaudeCodeProcess extends EventEmitter {
                 stdio: ['ignore', 'pipe', 'pipe'],
                 env: { ...cleanEnv, FORCE_COLOR: '0' },
             });
-            console.log('[DEBUG] Process spawned, PID:', this.process.pid);
             // Handle stdout
             this.process.stdout?.on('data', (data) => {
-                console.log('[DEBUG] stdout data received, length:', data.length);
                 const text = data.toString();
                 this.outputBuffer += text;
                 // Emit complete lines
@@ -134,7 +131,6 @@ export class ClaudeCodeProcess extends EventEmitter {
             });
             // Handle process close
             this.process.on('close', (code) => {
-                console.log('[DEBUG] Process closed with code:', code);
                 // Emit any remaining buffered output
                 if (this.outputBuffer.trim()) {
                     // Try to extract session_id from remaining buffer
@@ -162,7 +158,6 @@ export class ClaudeCodeProcess extends EventEmitter {
             });
             // Handle process errors (like ENOENT)
             this.process.on('error', (error) => {
-                console.log('[DEBUG] Process error:', error.message);
                 // Provide more helpful error messages
                 if (error.code === 'ENOENT') {
                     const helpfulError = new Error(`Claude CLI not found at '${this.resolvedCliPath}'. ` +
