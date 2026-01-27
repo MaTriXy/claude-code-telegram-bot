@@ -380,9 +380,15 @@ export class TelegramBot {
           this.sessionManager.sendToActiveSession(text);
           await ctx.reply(`Sent: "${text}"`);
         } else {
-          // Regular prompt to Claude (including Claude skill invocations like /babysitter:call)
+          // Send to Claude session
           this.sessionManager.sendToActiveSession(text);
-          await ctx.reply('Sent to Claude session.');
+
+          // Provide appropriate feedback based on what was sent
+          if (text.startsWith('/babysitter:call')) {
+            await ctx.reply('🤹 Sent to the Babysitter.');
+          } else {
+            await ctx.reply('Sent to Claude session.');
+          }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'No active session';
