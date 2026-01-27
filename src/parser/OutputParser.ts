@@ -1,0 +1,223 @@
+import { EventEmitter } from 'events';
+import type {
+  ParsedQuestion,
+  ClaudeOutput,
+  ToolUseOutput,
+  TelegramFormattedMessage,
+  QuestionOption,
+  InlineButton,
+} from '../types/index.js';
+
+const MAX_DESCRIPTION_LENGTH = 100;
+
+/**
+ * Interface for AskUserQuestion input structure
+ */
+interface AskUserQuestionInput {
+  questions: Array<{
+    question: string;
+    header?: string;
+    options: Array<{
+      label: string;
+      description?: string;
+    }>;
+    multiSelect?: boolean;
+  }>;
+}
+
+/**
+ * Parses Claude Code stream-json output
+ */
+export class OutputParser extends EventEmitter {
+  private buffer = '';
+
+  /**
+   * Detect if output contains an AskUserQuestion tool call
+   */
+  detectQuestion(output: ClaudeOutput): boolean {
+    if (output.type !== 'tool_use') {
+      return false;
+    }
+
+    const toolUse = output as ToolUseOutput;
+    return toolUse.name === 'AskUserQuestion';
+  }
+
+  /**
+   * Parse a question from tool_use output
+   */
+  parseQuestion(output: ToolUseOutput): ParsedQuestion | null {
+    if (output.name !== 'AskUserQuestion') {
+      return null;
+    }
+
+    const input = output.input as unknown as AskUserQuestionInput;
+    if (!input.questions || input.questions.length === 0) {
+      return null;
+    }
+
+    // Take the first question (Claude typically sends one at a time)
+    const questionData = input.questions[0];
+
+    const options: QuestionOption[] = questionData.options.map((opt) => ({
+      label: opt.label,
+      description: opt.description,
+    }));
+
+    return {
+      question: questionData.question,
+      header: questionData.header,
+      options,
+      multiSelect: questionData.multiSelect ?? false,
+    };
+  }
+
+  /**
+   * Format a question for Telegram
+   */
+  formatForTelegram(question: ParsedQuestion): TelegramFormattedMessage {
+    // Build the message text
+    let text = '';
+
+    if (question.header) {
+      text += `*${this.escapeMarkdown(question.header)}*\n\n`;
+    }
+
+    text += `${this.escapeMarkdown(question.question)}`;
+
+    // Add option descriptions if present
+    if (question.options.some((opt) => opt.description)) {
+      text += '\n\n';
+      question.options.forEach((opt, index) => {
+        const desc = opt.description
+          ? this.truncateDescription(opt.description)
+          : '';
+        text += `${index + 1}. *${this.escapeMarkdown(opt.label)}*`;
+        if (desc) {
+          text += ` - ${this.escapeMarkdown(desc)}`;
+        }
+        text += '\n';
+      });
+    }
+
+    // Build inline keyboard
+    const buttons: InlineButton[][] = [];
+
+    // Add option buttons (up to 4 per row)
+    for (let i = 0; i < question.options.length; i += 2) {
+      const row: InlineButton[] = [];
+      row.push({
+        text: question.options[i].label,
+        callback_data: `answer:${i}`,
+      });
+      if (i + 1 < question.options.length) {
+        row.push({
+          text: question.options[i + 1].label,
+          callback_data: `answer:${i + 1}`,
+        });
+      }
+      buttons.push(row);
+    }
+
+    // Add "Other" button for custom input
+    buttons.push([
+      {
+        text: '✏️ Other (type custom response)',
+        callback_data: 'answer:custom',
+      },
+    ]);
+
+    return {
+      text,
+      parseMode: 'Markdown',
+      replyMarkup: {
+        inline_keyboard: buttons,
+      },
+    };
+  }
+
+  /**
+   * Escape special Markdown characters
+   */
+  private escapeMarkdown(text: string): string {
+    return text.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, '\\$1');
+  }
+
+  /**
+   * Truncate description to max length
+   */
+  private truncateDescription(desc: string): string {
+    if (desc.length <= MAX_DESCRIPTION_LENGTH) {
+      return desc;
+    }
+    return desc.slice(0, MAX_DESCRIPTION_LENGTH - 3) + '...';
+  }
+
+  /**
+   * Detect if output is a tool call
+   */
+  detectToolCall(output: ClaudeOutput): boolean {
+    return output.type === 'tool_use';
+  }
+
+  /**
+   * Parse stream output chunk
+   * Returns array of parsed outputs and emits events
+   */
+  parseStreamOutput(chunk: string): ClaudeOutput[] {
+    const results: ClaudeOutput[] = [];
+
+    if (!chunk) {
+      return results;
+    }
+
+    // Add chunk to buffer
+    this.buffer += chunk;
+
+    // Process complete lines
+    const lines = this.buffer.split('\n');
+
+    // Keep the last incomplete line in buffer
+    this.buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      try {
+        const output = JSON.parse(trimmed) as ClaudeOutput;
+        results.push(output);
+
+        // Emit output event
+        this.emit('output', output);
+
+        // Check if it's a question and emit question event
+        if (this.detectQuestion(output)) {
+          const question = this.parseQuestion(output as ToolUseOutput);
+          if (question) {
+            this.emit('question', question);
+          }
+        }
+
+        // Check if it's a tool call and emit tool_call event
+        if (this.detectToolCall(output)) {
+          this.emit('tool_call', output as ToolUseOutput);
+        }
+      } catch {
+        // Invalid JSON line, skip it
+        // This can happen with partial output or non-JSON lines
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Reset the internal buffer
+   */
+  resetBuffer(): void {
+    this.buffer = '';
+  }
+}
