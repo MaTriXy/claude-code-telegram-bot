@@ -24,8 +24,22 @@ A Telegram bot that bridges your mobile device with Anthropic's Claude Code CLI,
 
 ### Control & Monitoring
 - **Real-time Progress** - Get notified when Claude is thinking, executing tools, or waiting for input
-- **Process Control** - Abort operations with `/abort` or force kill with `/kill`
+- **Process Control** - Abort operations with `/abort`, send ESC with `/escape`, or force kill with `/kill`
 - **Startup Notifications** - 🚀 See when Claude starts processing your request
+- **Configurable Notifications** - Control which notifications you receive (completion, error, warning, progress)
+- **Verbosity Levels** - Choose between minimal, normal, or verbose output
+
+### Voice & File Input
+- **Voice Messages** - Send voice messages that get transcribed via OpenAI Whisper and sent to Claude
+- **File Uploads** - Upload documents, code files, and images directly to Claude
+- **Photo Support** - Send photos with captions for Claude to analyze
+
+### Utility Commands
+- **File Operations** - View file contents (`/file`), git diffs (`/diff`), directory trees (`/tree`)
+- **Git Integration** - Quick access to git status, branches, logs, and more (`/git`)
+- **Output History** - Review recent Claude output (`/log`)
+- **Bookmarks** - Save and recall frequently used prompts (`/bookmark`)
+- **Context & Cost Tracking** - Monitor token usage (`/context`) and session costs (`/cost`)
 
 ### Integration
 - **Skill Forwarding** - Forward Claude Code slash commands (like `/babysitter:call`)
@@ -34,6 +48,9 @@ A Telegram bot that bridges your mobile device with Anthropic's Claude Code CLI,
 ### Security
 - **Whitelist Security** - Only authorized Telegram user IDs can interact with the bot
 - **Environment Isolation** - Child processes are spawned with clean environment variables
+- **Input Validation** - Message length limits (10KB max) to prevent abuse
+- **Rate Limiting** - Built-in rate limiting to prevent message flooding
+- **Path Traversal Protection** - File operations restricted to session working directory
 
 ---
 
@@ -140,13 +157,35 @@ claude-code-telegram-bot
 
 ## Configuration
 
+### Required Settings
+
 | Variable | Description | Required | Default |
 |----------|-------------|----------|--------|
 | `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) | Yes | - |
 | `ALLOWED_USER_IDS` | Comma-separated list of authorized Telegram user IDs | Yes | - |
-| `DEFAULT_WORKING_DIR` | Default directory for new sessions | No | Current directory |
-| `LOG_LEVEL` | Logging level (`error`, `warn`, `info`, `debug`) | No | `info` |
-| `CLAUDE_CLI_PATH` | Absolute path to claude CLI executable | No | Auto-detected |
+
+### Optional Settings
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DEFAULT_WORKING_DIR` | Default directory for new sessions | Current directory |
+| `LOG_LEVEL` | Logging level (`error`, `warn`, `info`, `debug`) | `info` |
+| `CLAUDE_CLI_PATH` | Absolute path to claude CLI executable | Auto-detected |
+| `DEFAULT_VERBOSITY` | Output verbosity (`minimal`, `normal`, `verbose`) | `normal` |
+
+### Voice Transcription (Optional)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `VOICE_ENABLED` | Enable voice message transcription | `false` |
+| `OPENAI_API_KEY` | OpenAI API key for Whisper transcription | - |
+
+### File Uploads (Optional)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `FILE_UPLOAD_ENABLED` | Enable file upload support | `false` |
+| `MAX_FILE_SIZE_MB` | Maximum file size in megabytes | `10` |
 
 ### Claude CLI Path Resolution
 
@@ -177,6 +216,7 @@ Set `CLAUDE_CLI_PATH` if your installation is in a different location.
 | Command | Description | Example |
 |---------|-------------|--------|
 | `/abort` | Send Ctrl+C to abort current operation | `/abort` |
+| `/escape` | Send ESC key to interrupt and allow new prompt | `/escape` |
 | `/kill` | Force kill current Claude process (hard stop) | `/kill` |
 
 ### Existing Session Discovery
@@ -185,6 +225,34 @@ Set `CLAUDE_CLI_PATH` if your installation is in a different location.
 |---------|-------------|--------|
 | `/sessions` | List existing Claude sessions on your system | `/sessions` |
 | `/attach <id> [dir]` | Attach to an existing Claude session | `/attach abc12345` |
+
+### File & Git Operations
+
+| Command | Description | Example |
+|---------|-------------|--------|
+| `/file <path> [--raw]` | View file contents or directory listing | `/file src/index.ts` |
+| `/diff [--staged] [path]` | Show git diff (unstaged, staged, or by path) | `/diff --staged` |
+| `/git [cmd] [args]` | Quick git operations (status, branch, log, etc.) | `/git status` |
+| `/tree [depth] [path]` | Show directory tree | `/tree 3 src/` |
+| `/pwd` | Show current working directory | `/pwd` |
+
+### Utility Commands
+
+| Command | Description | Example |
+|---------|-------------|--------|
+| `/log [n]` | View last n lines of output history | `/log 50` |
+| `/bookmark [action]` | Save/recall/list prompts | `/bookmark save test "run tests"` |
+| `/context` | Show context usage (tokens, percentage) | `/context` |
+| `/cost` | Show session cost information | `/cost` |
+
+### Feature Settings
+
+| Command | Description | Example |
+|---------|-------------|--------|
+| `/voice [on\|off]` | Toggle voice message transcription | `/voice on` |
+| `/upload [on\|off]` | Toggle file upload support | `/upload on` |
+| `/verbosity [level]` | Set output verbosity (minimal/normal/verbose) | `/verbosity verbose` |
+| `/notify <type> [on\|off]` | Configure notifications | `/notify error off` |
 
 ## Usage
 
@@ -287,7 +355,95 @@ If Claude gets stuck or you need to immediately stop processing:
 
 This sends a hard kill signal to the Claude process. The session remains active, so you can continue sending messages.
 
-> **Note:** `/abort` sends a soft interrupt (Ctrl+C), while `/kill` is a hard termination.
+> **Note:** `/abort` sends a soft interrupt (Ctrl+C), `/escape` sends ESC to allow a new prompt, while `/kill` is a hard termination.
+
+### Using Voice Messages
+
+If voice transcription is enabled (`VOICE_ENABLED=true` with `OPENAI_API_KEY`):
+
+1. Enable voice for your user: `/voice on`
+2. Send a voice message in Telegram
+3. The bot transcribes it via OpenAI Whisper
+4. Transcribed text is sent to Claude
+
+### Uploading Files
+
+If file uploads are enabled (`FILE_UPLOAD_ENABLED=true`):
+
+1. Enable uploads for your user: `/upload on`
+2. Send a document or photo in Telegram
+3. Supported files: code, text, images, PDFs (max 10MB default)
+4. Text files are embedded in the message; images/binaries are saved and path sent to Claude
+
+### Using Bookmarks
+
+Save frequently used prompts:
+
+```
+/bookmark save tests "run all tests and fix any failures"
+/bookmark save review "review the code for security issues"
+```
+
+Use saved prompts:
+```
+/bookmark tests
+```
+
+List all bookmarks:
+```
+/bookmark list
+```
+
+### Quick Git Operations
+
+The `/git` command provides shortcuts for common operations:
+
+```
+/git status    (or /git s)   - Show short status
+/git branch    (or /git b)   - Show branches with tracking info
+/git log [n]   (or /git l)   - Show last n commits (default 5)
+/git stash                   - List stashed changes
+/git remote                  - Show remotes
+```
+
+### Viewing Files and Diffs
+
+**View file contents:**
+```
+/file src/index.ts           - Show file content
+/file src/                   - List directory contents
+/file src/index.ts --raw     - Download as attachment
+```
+
+**View git changes:**
+```
+/diff                        - All unstaged changes
+/diff --staged               - Staged changes only
+/diff --stat                 - Summary of changes
+/diff src/bot/               - Changes in specific path
+```
+
+### Configuring Notifications
+
+Control which notifications you receive:
+
+```
+/notify completion on    - Notify when Claude finishes
+/notify error off        - Disable error notifications
+/notify progress on      - Show tool execution progress
+/notify all on           - Enable all notifications
+/notify                  - Show current settings
+```
+
+### Setting Verbosity
+
+Choose how much output you see:
+
+```
+/verbosity minimal   - Questions only (quiet mode)
+/verbosity normal    - Standard output (default)
+/verbosity verbose   - All details including tool progress
+```
 
 ## Architecture
 
@@ -319,11 +475,14 @@ This sends a hard kill signal to the Claude process. The session remains active,
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| **TelegramBot** | `src/bot/TelegramBot.ts` | Handles Telegram commands, user authorization, message routing, and output forwarding |
+| **TelegramBot** | `src/bot/TelegramBot.ts` | Handles Telegram commands, user authorization, message routing, output forwarding, and feature management (2100+ lines) |
 | **SessionManager** | `src/session/SessionManager.ts` | Creates, tracks, and manages multiple Claude sessions with ULID-based IDs |
 | **ClaudeCodeProcess** | `src/session/ClaudeCodeProcess.ts` | Spawns Claude CLI processes with `--dangerously-skip-permissions`, maintains conversation via `--resume` |
 | **OutputParser** | `src/parser/OutputParser.ts` | Parses streaming JSON, detects `AskUserQuestion` tool calls, emits typed events |
 | **ClaudeSessionScanner** | `src/utils/ClaudeSessionScanner.ts` | Scans `~/.claude/` for existing sessions, enables session discovery and attachment |
+| **VoiceHandler** | `src/utils/VoiceHandler.ts` | Handles voice message transcription via OpenAI Whisper API |
+| **FileHandler** | `src/utils/FileHandler.ts` | Manages file uploads, validation, temp storage, and cleanup |
+| **NotificationManager** | `src/notifications/NotificationManager.ts` | Manages per-user notification preferences and delivery |
 
 ### Event Flow
 
@@ -366,15 +525,19 @@ npm run test:coverage       # Generate coverage report
 
 | Module | Tests | Coverage Areas |
 |--------|-------|---------------|
-| **SessionManager** | 27 | Session lifecycle, multi-session handling, directory changes |
-| **OutputParser** | 26 | JSON parsing, question detection, Telegram formatting |
-| **TelegramBot** | 29 | Command handling, authorization, callback queries |
-| **Integration** | 19 | End-to-end flows, error handling |
-| **Real E2E** | 17 | Real Claude CLI integration, actual responses |
-| **Session Attach** | 15 | Session scanning, attachment, conversation continuity |
-| **Full Diagnostics** | 22 | Comprehensive system health check |
+| **TelegramBot** | Core commands, authorization, callbacks, utility commands |
+| **SessionManager** | Session lifecycle, multi-session handling, directory changes |
+| **OutputParser** | JSON parsing, question detection, Telegram formatting |
+| **FileHandler** | File validation, upload handling, cleanup |
+| **VoiceHandler** | Voice transcription, API integration |
+| **NotificationManager** | Notification preferences, delivery |
+| **Integration** | End-to-end flows, message routing, error handling |
+| **Real E2E** | Real Claude CLI integration, actual responses |
+| **Session Attach** | Session scanning, attachment, conversation continuity |
+| **Full Diagnostics** | Comprehensive 22-point system health check |
+| **Comprehensive E2E** | 122 scenarios across 13 categories |
 
-**Total: 157 tests**
+**Total: 490 tests across 14 test suites**
 
 ### Running Diagnostics
 
@@ -399,30 +562,38 @@ This checks:
 ```
 claude-code-telegram/
 ├── src/
-│   ├── index.ts              # Main entry point
+│   ├── index.ts                    # Main entry point
 │   ├── bot/
-│   │   └── TelegramBot.ts    # Telegram bot implementation (772 lines)
+│   │   └── TelegramBot.ts          # Telegram bot implementation (2100+ lines)
 │   ├── session/
-│   │   ├── SessionManager.ts # Session lifecycle management (389 lines)
-│   │   └── ClaudeCodeProcess.ts # CLI process wrapper (251 lines)
+│   │   ├── SessionManager.ts       # Session lifecycle management (410 lines)
+│   │   └── ClaudeCodeProcess.ts    # CLI process wrapper (274 lines)
 │   ├── parser/
-│   │   └── OutputParser.ts   # Streaming JSON parser (300+ lines)
+│   │   └── OutputParser.ts         # Streaming JSON parser (350+ lines)
 │   ├── utils/
-│   │   └── ClaudeSessionScanner.ts # Existing session discovery
+│   │   ├── ClaudeSessionScanner.ts # Existing session discovery
+│   │   ├── VoiceHandler.ts         # Voice message transcription
+│   │   ├── FileHandler.ts          # File upload handling
+│   │   └── index.ts                # Utils exports
+│   ├── notifications/
+│   │   └── NotificationManager.ts  # Notification preferences
 │   ├── types/
-│   │   └── index.ts          # TypeScript interfaces
+│   │   └── index.ts                # TypeScript interfaces (227 lines)
 │   └── config/
-│       └── index.ts          # Configuration management
+│       └── index.ts                # Configuration management
 ├── tests/
-│   ├── session/              # SessionManager tests
-│   ├── parser/               # OutputParser tests
-│   ├── bot/                  # TelegramBot tests
-│   ├── integration/          # End-to-end tests
-│   │   ├── e2e.test.ts       # Mock integration tests
-│   │   ├── real-e2e.test.ts  # Real Claude CLI tests
-│   │   └── session-attach.test.ts # Session attachment tests
+│   ├── bot/                        # TelegramBot & command tests
+│   ├── session/                    # SessionManager tests
+│   ├── parser/                     # OutputParser tests
+│   ├── utils/                      # FileHandler & VoiceHandler tests
+│   ├── notifications/              # NotificationManager tests
+│   ├── e2e/                        # Comprehensive E2E tests (122 scenarios)
+│   ├── integration/                # Integration tests
+│   │   ├── e2e.test.ts             # Mock integration tests
+│   │   ├── real-e2e.test.ts        # Real Claude CLI tests
+│   │   └── session-attach.test.ts  # Session attachment tests
 │   └── diagnostics/
-│       └── full-system-check.test.ts # Comprehensive diagnostics
+│       └── full-system-check.test.ts # 22-point system diagnostics
 ├── package.json
 ├── tsconfig.json
 └── .env.example
@@ -509,11 +680,20 @@ Telegram has a 4096 character limit per message. The bot automatically truncates
 - **Session variables removed** - `CLAUDE_SESSION_ID`, `CLAUDECODE`, and `CLAUDE_CODE_ENTRYPOINT` are stripped to prevent conflicts
 - **Isolated stdin** - Process stdin is set to `ignore` mode to prevent injection
 
+### Input Validation & Rate Limiting
+
+- **Message length limits** - Maximum 10,240 characters (10KB) per message
+- **Rate limiting** - Minimum 1 second between messages to same chat
+- **Message queue** - Maximum 50 queued messages to prevent flooding
+- **File validation** - Size limits, extension whitelist, MIME type checks
+- **Path traversal protection** - File operations restricted to session working directory
+
 ### Credential Safety
 
 - **No credential storage** - The bot does not store any Claude API keys or credentials
 - **Inherited authentication** - Claude CLI uses its own authentication mechanism (typically via `~/.claude`)
 - **Environment file protection** - Keep `.env` out of version control (already in `.gitignore`)
+- **Comprehensive gitignore** - Patterns for keys, secrets, logs, and audit outputs
 
 ### Best Practices
 
@@ -522,6 +702,8 @@ Telegram has a 4096 character limit per message. The bot automatically truncates
 3. **Monitor sessions** - Regularly check `/list` for unexpected sessions
 4. **Limit working directories** - Consider restricting `DEFAULT_WORKING_DIR` to safe locations
 5. **Keep updated** - Regularly update dependencies to patch security vulnerabilities
+6. **Run in sandboxed environment** - Use Docker, VMs, or other isolation for production use
+7. **Rotate credentials** - Periodically rotate Telegram bot token and any API keys
 
 ## Limitations / Known Issues
 
@@ -530,8 +712,9 @@ Telegram has a 4096 character limit per message. The bot automatically truncates
 - **Single user per session** - Sessions are not designed for concurrent multi-user access
 - **No persistent state** - Sessions are lost when the bot process restarts (conversation history is preserved in Claude)
 - **Message size limits** - Telegram limits messages to 4096 characters; long responses are truncated
-- **No file uploads** - Cannot send files to Claude through Telegram (use prompts describing file contents)
+- **File size limits** - File uploads limited to 10MB by default (configurable)
 - **Thinking debounce** - "Thinking..." messages are debounced to every 5 seconds to reduce noise
+- **Input length limit** - Messages are limited to 10KB to prevent abuse
 
 ### Known Issues
 
@@ -578,6 +761,8 @@ Contributions are welcome! Here's how to get started:
 - **Error handling** - More graceful error recovery
 - **Documentation** - Tutorials, examples, translations
 - **Testing** - Increase test coverage, add edge cases
+- **Voice features** - Additional voice processing options
+- **Platform support** - Windows compatibility testing and fixes
 
 ## License
 
