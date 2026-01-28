@@ -19,7 +19,18 @@ export default {
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/**/*.d.ts',
+    '!src/index.ts', // Entry point
   ],
   coverageDirectory: 'coverage',
-  coverageReporters: ['text', 'lcov', 'html'],
+  coverageReporters: ['text', 'text-summary', 'lcov', 'html'],
+  coverageThreshold: {
+    global: {
+      // TelegramBot.ts has low coverage due to Telegram API dependencies
+      // but utility classes and parser have good coverage
+      branches: 20,
+      functions: 45,
+      lines: 35,
+      statements: 35,
+    },
+  },
 };
