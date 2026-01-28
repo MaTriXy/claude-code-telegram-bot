@@ -126,4 +126,58 @@ export interface TelegramFormattedMessage {
         inline_keyboard: InlineButton[][];
     };
 }
+/**
+ * Verbosity level for output filtering
+ */
+export type VerbosityLevel = 'minimal' | 'normal' | 'verbose';
+/**
+ * Notification types
+ */
+export type NotificationType = 'completion' | 'error' | 'warning' | 'progress';
+/**
+ * User notification preferences
+ */
+export type NotificationPreferences = Record<NotificationType, boolean>;
+/**
+ * Log level types
+ */
+export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
+/**
+ * Voice configuration
+ */
+export interface VoiceConfig {
+    enabled: boolean;
+    openaiApiKey?: string;
+}
+/**
+ * Notification configuration
+ */
+export interface NotificationConfig {
+    defaults: NotificationPreferences;
+}
+/**
+ * Verbosity configuration
+ */
+export interface VerbosityConfig {
+    defaultLevel: VerbosityLevel;
+}
+/**
+ * File upload configuration
+ */
+export interface FileUploadConfig {
+    enabled: boolean;
+    maxFileSizeMB: number;
+    supportedMimeTypes: string[];
+    allowedExtensions: string[];
+}
+/**
+ * Extended TelegramBot configuration with new features
+ */
+export interface ExtendedTelegramBotConfig extends TelegramBotConfig {
+    voiceConfig?: VoiceConfig;
+    notificationConfig?: NotificationConfig;
+    verbosityConfig?: VerbosityConfig;
+    fileUploadConfig?: FileUploadConfig;
+    logLevel?: LogLevel;
+}
 //# sourceMappingURL=index.d.ts.map

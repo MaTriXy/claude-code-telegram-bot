@@ -1,5 +1,5 @@
 import { Telegraf } from 'telegraf';
-import type { TelegramBotConfig } from '../types/index.js';
+import type { TelegramBotConfig, ExtendedTelegramBotConfig } from '../types/index.js';
 import { SessionManager } from '../session/SessionManager.js';
 import { OutputParser } from '../parser/OutputParser.js';
 /**
@@ -21,7 +21,31 @@ export declare class TelegramBot {
     private static readonly THINKING_DEBOUNCE_MS;
     private waitingForUserResponse;
     private suppressedMessages;
-    constructor(config: TelegramBotConfig);
+    private voiceHandler;
+    private fileHandler;
+    private notificationManager;
+    private voiceConfig;
+    private fileUploadConfig;
+    private userVoiceEnabled;
+    private userUploadEnabled;
+    private userVerbosityLevel;
+    private userNotificationPrefs;
+    private defaultVerbosity;
+    private defaultNotificationPrefs;
+    private outputHistory;
+    private static readonly MAX_OUTPUT_HISTORY;
+    private userBookmarks;
+    private messageQueue;
+    private isProcessingQueue;
+    private lastMessageTime;
+    private static readonly RATE_LIMIT_MS;
+    private static readonly MAX_QUEUE_SIZE;
+    private messageBatchBuffer;
+    private messageBatchTimer;
+    private static readonly BATCH_DELAY_MS;
+    private lastContextInfo;
+    private pendingCostCallback;
+    constructor(config: TelegramBotConfig | ExtendedTelegramBotConfig);
     /**
      * Set up authorization middleware
      */
@@ -30,6 +54,14 @@ export declare class TelegramBot {
      * Set up command handlers
      */
     private setupCommands;
+    /**
+     * Build a directory tree string
+     */
+    private buildDirectoryTree;
+    /**
+     * Format and send cost information to user
+     */
+    private formatAndSendCostInfo;
     /**
      * Set up callback query handlers for inline buttons
      */
@@ -51,13 +83,45 @@ export declare class TelegramBot {
      */
     private subscribeToSessionOutput;
     /**
+     * Add a line to output history for /log command
+     */
+    private addToOutputHistory;
+    /**
+     * Parse context information from Claude output
+     */
+    private parseContextInfo;
+    /**
+     * Notify users about session crash (auto-reconnect feature)
+     */
+    private notifySessionCrash;
+    /**
      * Unsubscribe from a session's output
      */
     private unsubscribeFromSession;
     /**
-     * Forward text output to all connected users
+     * Forward text output to all connected users with message batching
      */
     private forwardTextToUsers;
+    /**
+     * Add message to batch buffer and schedule flush
+     */
+    private batchMessage;
+    /**
+     * Flush batched messages for a chat
+     */
+    private flushMessageBatch;
+    /**
+     * Queue a message for later sending (when rate limited)
+     */
+    private queueMessage;
+    /**
+     * Process queued messages respecting rate limits
+     */
+    private processMessageQueue;
+    /**
+     * Send message and track rate limit
+     */
+    private sendMessageWithRateLimit;
     /**
      * Forward error messages to all connected users with emoji indicator
      */
