@@ -1460,6 +1460,42 @@ export class TelegramBot {
   private setupMessageHandlers(): void {
     this.bot.on('text', async (ctx) => {
       const rawText = ctx.message.text;
+      const chatId = ctx.chat.id;
+
+      // IMPORTANT: Check if we're awaiting custom input FIRST (before group filtering)
+      // This allows users to type custom responses in groups without mentioning the bot
+      if (this.awaitingCustomInput.has(chatId)) {
+        const text = this.stripBotMention(rawText);
+
+        // Input length validation
+        if (text.length > TelegramBot.MAX_MESSAGE_LENGTH) {
+          await ctx.reply(
+            `Message too long (${text.length} chars). Maximum allowed: ${TelegramBot.MAX_MESSAGE_LENGTH} characters.`
+          );
+          return;
+        }
+
+        this.awaitingCustomInput.delete(chatId);
+        this.pendingQuestions.delete(chatId);
+
+        // Resume normal message forwarding now that user has responded
+        this.waitingForUserResponse = false;
+        console.log('[CustomAnswer] User responded, resuming message forwarding');
+
+        // Track which chat is actively communicating with the bot
+        this.activeChat = chatId;
+
+        // Send custom response as a new message to Claude
+        console.log(`[CustomAnswer] Sending as new message: "${text}"`);
+        try {
+          this.sessionManager.sendToActiveSession(text);
+          await ctx.reply(`Sent: "${text}"`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'No active session';
+          await ctx.reply(`Error: ${message}. Use /new to create a session.`);
+        }
+        return;
+      }
 
       // Group chat support: Check if message is directed at this bot
       if (!this.isMessageForBot(ctx, rawText)) {
@@ -1483,43 +1519,26 @@ export class TelegramBot {
       // and should be forwarded to Claude
       if (this.isBotCommand(text)) return;
 
-      const chatId = ctx.chat.id;
-
       // Track which chat is actively communicating with the bot
       this.activeChat = chatId;
 
       try {
-        // Check if we're awaiting custom input for a question
-        if (this.awaitingCustomInput.has(chatId)) {
-          this.awaitingCustomInput.delete(chatId);
-          this.pendingQuestions.delete(chatId);
-
-          // Resume normal message forwarding now that user has responded
+        // If user sends a new message while a question was pending, clear the waiting state
+        // This handles the case where user ignores the question and sends something else
+        if (this.waitingForUserResponse) {
+          console.log('[Message] User sent new message, clearing pending question state');
           this.waitingForUserResponse = false;
-          console.log('[CustomAnswer] User responded, resuming message forwarding');
+          this.pendingQuestions.delete(chatId);
+        }
 
-          // Send custom response as a new message to Claude
-          console.log(`[CustomAnswer] Sending as new message: "${text}"`);
-          this.sessionManager.sendToActiveSession(text);
-          await ctx.reply(`Sent: "${text}"`);
+        // Send to Claude session
+        this.sessionManager.sendToActiveSession(text);
+
+        // Provide appropriate feedback based on what was sent
+        if (text.startsWith('/babysitter:call')) {
+          await ctx.reply('🤹 Sent to the Babysitter.');
         } else {
-          // If user sends a new message while a question was pending, clear the waiting state
-          // This handles the case where user ignores the question and sends something else
-          if (this.waitingForUserResponse) {
-            console.log('[Message] User sent new message, clearing pending question state');
-            this.waitingForUserResponse = false;
-            this.pendingQuestions.delete(chatId);
-          }
-
-          // Send to Claude session
-          this.sessionManager.sendToActiveSession(text);
-
-          // Provide appropriate feedback based on what was sent
-          if (text.startsWith('/babysitter:call')) {
-            await ctx.reply('🤹 Sent to the Babysitter.');
-          } else {
-            await ctx.reply('Sent to Claude session.');
-          }
+          await ctx.reply('Sent to Claude session.');
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'No active session';
