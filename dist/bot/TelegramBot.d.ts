@@ -40,6 +40,7 @@ export declare class TelegramBot {
     private lastMessageTime;
     private static readonly RATE_LIMIT_MS;
     private static readonly MAX_QUEUE_SIZE;
+    private static readonly MAX_MESSAGE_LENGTH;
     private messageBatchBuffer;
     private messageBatchTimer;
     private static readonly BATCH_DELAY_MS;

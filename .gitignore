@@ -21,3 +21,23 @@ coverage/
 .vscode/
 .idea/
 
+# Security - Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Security - Secrets directories
+secrets/
+credentials/
+.secrets/
+
+# Security - Logs (may contain sensitive data)
+*.log
+logs/
+
+# Security audit output (contains sensitive findings)
+security-audit-output/
+

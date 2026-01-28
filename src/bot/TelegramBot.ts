@@ -28,7 +28,8 @@ type CallbackContext = Context<Update.CallbackQueryUpdate>;
 const BOT_COMMANDS = new Set([
   'start', 'help', 'new', 'cd', 'list', 'switch', 'close', 'status', 'abort', 'kill', 'sessions', 'attach',
   'voice', 'notify', 'verbosity', 'upload', 'file', 'diff', 'escape',
-  'log', 'pwd', 'git', 'tree', 'bookmark', 'context', 'cost'
+  'log', 'pwd', 'git', 'tree', 'bookmark', 'context', 'cost',
+  'babysit' // Alias for /babysitter:call
 ]);
 
 // Default notification preferences
@@ -85,6 +86,9 @@ export class TelegramBot {
   private lastMessageTime: Map<number, number> = new Map(); // chatId -> timestamp
   private static readonly RATE_LIMIT_MS = 1000; // Minimum time between messages to same chat
   private static readonly MAX_QUEUE_SIZE = 50;
+
+  // Input validation - security hardening (REM-005)
+  private static readonly MAX_MESSAGE_LENGTH = 10240; // 10KB max input size
 
   // Message batching
   private messageBatchBuffer: Map<number, string[]> = new Map(); // chatId -> pending messages
@@ -207,6 +211,8 @@ export class TelegramBot {
     this.bot.command('help', async (ctx) => {
       await ctx.reply(
         'Claude Code Bot Commands\n\n' +
+          '⭐ Recommended:\n' +
+          '/babysit [task] - Start Babysitter for complex workflows\n\n' +
           'Session Management:\n' +
           '/new <name> [workingDir] - Create a new session\n' +
           '/sessions - List existing Claude sessions on system\n' +
@@ -1178,6 +1184,29 @@ export class TelegramBot {
         await ctx.reply(`Error: ${message}`);
       }
     });
+
+    // /babysit - Alias for /babysitter:call (forwards to Claude as skill)
+    this.bot.command('babysit', async (ctx) => {
+      const session = this.sessionManager.getActiveSession();
+      if (!session) {
+        await ctx.reply('No active session. Use /new to create one.');
+        return;
+      }
+
+      try {
+        // Get any arguments after /babysit
+        const args = ctx.message.text.replace(/^\/babysit\s*/, '').trim();
+
+        // Forward to Claude as /babysitter:call with the same arguments
+        const fullCommand = args ? `/babysitter:call ${args}` : '/babysitter:call';
+        this.sessionManager.sendToActiveSession(fullCommand);
+
+        await ctx.reply('🤹 Sent to the Babysitter.');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to send to Babysitter';
+        await ctx.reply(`Error: ${message}`);
+      }
+    });
   }
 
   /**
@@ -1362,6 +1391,14 @@ export class TelegramBot {
   private setupMessageHandlers(): void {
     this.bot.on('text', async (ctx) => {
       const text = ctx.message.text;
+
+      // Input length validation - security hardening (REM-005)
+      if (text.length > TelegramBot.MAX_MESSAGE_LENGTH) {
+        await ctx.reply(
+          `Message too long (${text.length} chars). Maximum allowed: ${TelegramBot.MAX_MESSAGE_LENGTH} characters.`
+        );
+        return;
+      }
 
       // Skip only if it's a registered bot command (like /new, /list, etc.)
       // Other slash commands (like /babysitter:call, /commit) are Claude skills
