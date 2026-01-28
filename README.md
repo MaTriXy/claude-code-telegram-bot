@@ -16,6 +16,8 @@ A Telegram bot that bridges your mobile device with Anthropic's Claude Code CLI,
 - **Interactive Q&A** - Receive Claude's questions as Telegram messages with inline response buttons
 - **Conversation Continuity** - Sessions maintain context across messages using `--resume`
 - **Multi-Project Support** - Manage multiple project directories simultaneously
+- **Group Chat Support** - Add the bot to group chats for team collaboration
+- **Multi-User Support** - Multiple authorized users can share the same session
 
 ### Session Discovery & Attachment
 - **Existing Session Discovery** - Scan and list Claude sessions running anywhere on your system
@@ -356,6 +358,38 @@ If Claude gets stuck or you need to immediately stop processing:
 This sends a hard kill signal to the Claude process. The session remains active, so you can continue sending messages.
 
 > **Note:** `/abort` sends a soft interrupt (Ctrl+C), `/escape` sends ESC to allow a new prompt, while `/kill` is a hard termination.
+
+### Using in Group Chats
+
+The bot supports being added to Telegram groups for team collaboration:
+
+**Adding to a Group:**
+1. Add the bot to your Telegram group
+2. The bot will only respond to:
+   - Direct mentions: `@YourBotName help me with this code`
+   - Commands: `/new`, `/status`, etc.
+   - Replies to the bot's messages
+
+**How it works in groups:**
+- The bot ignores regular group chat messages (no spam!)
+- Mention the bot with `@BotName` to send a message to Claude
+- All authorized users in the group can interact with the shared session
+- Claude's responses are sent to the group
+
+**Example group usage:**
+```
+User A: @ClaudeBot create a REST API for user management
+Bot: Sent to Claude session.
+[Claude's response appears in the group]
+
+User B: @ClaudeBot add authentication to that
+Bot: Sent to Claude session.
+[Claude continues the conversation]
+```
+
+**Group + Private Chat:**
+- You can use the bot in private chat AND groups simultaneously
+- All authorized users see Claude's responses wherever they're interacting
 
 ### Using Voice Messages
 

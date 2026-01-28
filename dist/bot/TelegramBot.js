@@ -73,6 +73,9 @@ export class TelegramBot {
     lastContextInfo = {};
     // Cost tracking for /cost command
     pendingCostCallback = null;
+    // Group chat support - track which chat initiated the current conversation
+    activeChat = null; // The chat that should receive responses
+    botUsername = null; // Bot's username for mention detection
     constructor(config) {
         this.bot = new Telegraf(config.token);
         this.sessionManager = new SessionManager(config.sessionManagerConfig);
@@ -115,7 +118,14 @@ export class TelegramBot {
         // Authorization middleware
         this.bot.use(async (ctx, next) => {
             const userId = ctx.from?.id;
+            const chatType = ctx.chat?.type;
+            const isGroup = chatType === 'group' || chatType === 'supergroup';
             if (!userId || !this.isUserAuthorized(userId)) {
+                // In groups, silently ignore unauthorized users to avoid spam
+                if (isGroup) {
+                    return;
+                }
+                // In private chats, tell the user they're not authorized
                 await ctx.reply('Unauthorized. Your user ID is not in the allowed list.');
                 return;
             }
@@ -124,7 +134,7 @@ export class TelegramBot {
                 const wasNew = !this.userChatIds.has(userId);
                 this.userChatIds.set(userId, ctx.chat.id);
                 if (wasNew) {
-                    console.log(`[Auth] User ${userId} connected with chat ID ${ctx.chat.id}`);
+                    console.log(`[Auth] User ${userId} connected with chat ID ${ctx.chat.id} (${chatType})`);
                 }
             }
             await next();
@@ -1184,11 +1194,68 @@ export class TelegramBot {
         return BOT_COMMANDS.has(commandName);
     }
     /**
+     * Check if a message in a group chat is directed at this bot
+     * Returns true if:
+     * - It's a private chat (always process)
+     * - Message starts with / (command)
+     * - Message mentions the bot (@botname)
+     * - Message is a reply to the bot's message
+     */
+    isMessageForBot(ctx, text) {
+        const chatType = ctx.chat?.type;
+        // Always process messages in private chats
+        if (chatType === 'private') {
+            return true;
+        }
+        // In groups/supergroups, check if message is directed at bot
+        if (chatType === 'group' || chatType === 'supergroup') {
+            // Check 1: Message starts with a command
+            if (text.startsWith('/')) {
+                // If command includes @botname, verify it's for this bot
+                const botMatch = text.match(/^\/[a-zA-Z0-9_]+@([a-zA-Z0-9_]+)/);
+                if (botMatch) {
+                    return botMatch[1].toLowerCase() === this.botUsername?.toLowerCase();
+                }
+                // Command without @botname - process it (Telegram delivers to all bots)
+                return true;
+            }
+            // Check 2: Message mentions the bot
+            if (this.botUsername && text.toLowerCase().includes(`@${this.botUsername.toLowerCase()}`)) {
+                return true;
+            }
+            // Check 3: Message is a reply to the bot's message
+            const replyToMessage = ctx.message?.reply_to_message;
+            if (replyToMessage?.from?.username?.toLowerCase() === this.botUsername?.toLowerCase()) {
+                return true;
+            }
+            // Message is not directed at the bot - ignore it
+            return false;
+        }
+        // Channels - ignore
+        return false;
+    }
+    /**
+     * Strip bot mention from message text for cleaner processing
+     */
+    stripBotMention(text) {
+        if (!this.botUsername)
+            return text;
+        // Remove @botname from the message
+        return text.replace(new RegExp(`@${this.botUsername}\\b`, 'gi'), '').trim();
+    }
+    /**
      * Set up message handlers for text input
      */
     setupMessageHandlers() {
         this.bot.on('text', async (ctx) => {
-            const text = ctx.message.text;
+            const rawText = ctx.message.text;
+            // Group chat support: Check if message is directed at this bot
+            if (!this.isMessageForBot(ctx, rawText)) {
+                // Message in group not directed at bot - ignore silently
+                return;
+            }
+            // Strip bot mention from message for cleaner processing
+            const text = this.stripBotMention(rawText);
             // Input length validation - security hardening (REM-005)
             if (text.length > TelegramBot.MAX_MESSAGE_LENGTH) {
                 await ctx.reply(`Message too long (${text.length} chars). Maximum allowed: ${TelegramBot.MAX_MESSAGE_LENGTH} characters.`);
@@ -1200,6 +1267,8 @@ export class TelegramBot {
             if (this.isBotCommand(text))
                 return;
             const chatId = ctx.chat.id;
+            // Track which chat is actively communicating with the bot
+            this.activeChat = chatId;
             try {
                 // Check if we're awaiting custom input for a question
                 if (this.awaitingCustomInput.has(chatId)) {
@@ -1242,6 +1311,8 @@ export class TelegramBot {
             const userId = ctx.from?.id;
             if (!userId)
                 return;
+            // Track which chat is actively communicating with the bot
+            this.activeChat = ctx.chat.id;
             // Check if voice is enabled for this user
             const voiceEnabled = this.userVoiceEnabled.get(userId) ?? this.voiceConfig.enabled;
             if (!voiceEnabled || !this.voiceHandler) {
@@ -1277,6 +1348,8 @@ export class TelegramBot {
             const userId = ctx.from?.id;
             if (!userId)
                 return;
+            // Track which chat is actively communicating with the bot
+            this.activeChat = ctx.chat.id;
             // Check if upload is enabled for this user
             const uploadEnabled = this.userUploadEnabled.get(userId) ?? this.fileUploadConfig.enabled;
             if (!uploadEnabled || !this.fileHandler) {
@@ -1336,6 +1409,8 @@ export class TelegramBot {
             const userId = ctx.from?.id;
             if (!userId)
                 return;
+            // Track which chat is actively communicating with the bot
+            this.activeChat = ctx.chat.id;
             // Check if upload is enabled for this user
             const uploadEnabled = this.userUploadEnabled.get(userId) ?? this.fileUploadConfig.enabled;
             if (!uploadEnabled || !this.fileHandler) {
@@ -1534,23 +1609,44 @@ export class TelegramBot {
     }
     /**
      * Forward text output to all connected users with message batching
+     * If activeChat is set, prioritize sending to that chat (group support)
      */
     async forwardTextToUsers(text) {
         // Skip empty or very short messages
         if (!text || text.trim().length === 0) {
             return;
         }
-        for (const [userId, chatId] of this.userChatIds.entries()) {
+        // Build list of chats to send to
+        const chatsToNotify = new Set();
+        // If there's an active chat (from a recent message), prioritize it
+        if (this.activeChat !== null) {
+            chatsToNotify.add(this.activeChat);
+        }
+        // Also include all user chats for multi-user support
+        for (const [_userId, chatId] of this.userChatIds.entries()) {
+            chatsToNotify.add(chatId);
+        }
+        for (const chatId of chatsToNotify) {
             try {
-                // Check verbosity - minimal level skips text output
-                const verbosity = this.userVerbosityLevel.get(userId) ?? this.defaultVerbosity;
-                if (verbosity === 'minimal') {
-                    continue;
+                // Find the user for this chat to check preferences
+                let userId;
+                for (const [uid, cid] of this.userChatIds.entries()) {
+                    if (cid === chatId) {
+                        userId = uid;
+                        break;
+                    }
                 }
-                // Check notification preferences
-                const prefs = this.userNotificationPrefs.get(userId) ?? this.defaultNotificationPrefs;
-                if (!prefs.completion) {
-                    continue;
+                if (userId) {
+                    // Check verbosity - minimal level skips text output
+                    const verbosity = this.userVerbosityLevel.get(userId) ?? this.defaultVerbosity;
+                    if (verbosity === 'minimal') {
+                        continue;
+                    }
+                    // Check notification preferences
+                    const prefs = this.userNotificationPrefs.get(userId) ?? this.defaultNotificationPrefs;
+                    if (!prefs.completion) {
+                        continue;
+                    }
                 }
                 // Use message batching to reduce message spam
                 this.batchMessage(chatId, text);
@@ -1724,19 +1820,29 @@ export class TelegramBot {
         }
     }
     /**
-     * Forward a question to all connected users
+     * Forward a question to all connected users (including active group chat)
      */
     async forwardQuestionToUsers(question) {
         console.log(`[Question] Detected question: "${question.question.substring(0, 50)}..."`);
-        console.log(`[Question] Connected users: ${this.userChatIds.size}`);
-        if (this.userChatIds.size === 0) {
-            console.warn('[Question] No users connected to receive the question!');
+        console.log(`[Question] Connected users: ${this.userChatIds.size}, Active chat: ${this.activeChat}`);
+        // Build list of chats to send to
+        const chatsToNotify = new Set();
+        // If there's an active chat (from a recent message), prioritize it
+        if (this.activeChat !== null) {
+            chatsToNotify.add(this.activeChat);
+        }
+        // Also include all user chats
+        for (const [_userId, chatId] of this.userChatIds.entries()) {
+            chatsToNotify.add(chatId);
+        }
+        if (chatsToNotify.size === 0) {
+            console.warn('[Question] No chats to receive the question!');
             return;
         }
         const formatted = this.outputParser.formatForTelegram(question);
-        for (const [userId, chatId] of this.userChatIds.entries()) {
+        for (const chatId of chatsToNotify) {
             try {
-                console.log(`[Question] Sending to user ${userId} (chat ${chatId})`);
+                console.log(`[Question] Sending to chat ${chatId}`);
                 // Store pending question for this chat
                 this.pendingQuestions.set(chatId, question);
                 await this.bot.telegram.sendMessage(chatId, formatted.text, {
@@ -1756,7 +1862,16 @@ export class TelegramBot {
     async start() {
         console.log('Starting Telegram bot...');
         await this.bot.launch();
-        console.log('Telegram bot started successfully');
+        // Get bot info for mention detection in group chats
+        try {
+            const botInfo = await this.bot.telegram.getMe();
+            this.botUsername = botInfo.username || null;
+            console.log(`Telegram bot started successfully (username: @${this.botUsername})`);
+        }
+        catch {
+            // In test environment, getMe might not be mocked
+            console.log('Telegram bot started successfully');
+        }
         // Enable graceful stop
         process.once('SIGINT', () => this.stop());
         process.once('SIGTERM', () => this.stop());

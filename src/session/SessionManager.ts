@@ -1,5 +1,6 @@
 import { ulid } from 'ulid';
 import { existsSync, statSync } from 'fs';
+import * as path from 'path';
 import type { Session, SessionWithProcess, SessionManagerConfig } from '../types/index.js';
 import { ClaudeCodeProcess } from './ClaudeCodeProcess.js';
 
@@ -23,7 +24,8 @@ export class SessionManager {
    */
   async createSession(name: string, workingDir?: string): Promise<Session> {
     const id = ulid();
-    const sessionWorkingDir = workingDir || this.config.defaultWorkingDir || process.cwd();
+    // Resolve to absolute path to ensure consistency
+    const sessionWorkingDir = path.resolve(workingDir || this.config.defaultWorkingDir || process.cwd());
 
     // Validate working directory exists and is a directory
     if (!existsSync(sessionWorkingDir)) {
@@ -79,7 +81,8 @@ export class SessionManager {
    */
   async attachToSession(name: string, existingSessionId: string, workingDir?: string): Promise<Session> {
     const id = ulid();
-    const sessionWorkingDir = workingDir || this.config.defaultWorkingDir || process.cwd();
+    // Resolve to absolute path to ensure consistency
+    const sessionWorkingDir = path.resolve(workingDir || this.config.defaultWorkingDir || process.cwd());
 
     // Validate working directory exists and is a directory
     if (!existsSync(sessionWorkingDir)) {
@@ -363,34 +366,37 @@ export class SessionManager {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
+    // Resolve to absolute path to ensure consistency
+    const resolvedWorkingDir = path.resolve(newWorkingDir);
+
     // Validate new working directory exists and is a directory
-    if (!existsSync(newWorkingDir)) {
-      throw new Error(`Working directory does not exist: ${newWorkingDir}`);
+    if (!existsSync(resolvedWorkingDir)) {
+      throw new Error(`Working directory does not exist: ${resolvedWorkingDir}`);
     }
 
     try {
-      const stats = statSync(newWorkingDir);
+      const stats = statSync(resolvedWorkingDir);
       if (!stats.isDirectory()) {
-        throw new Error(`Path is not a directory: ${newWorkingDir}`);
+        throw new Error(`Path is not a directory: ${resolvedWorkingDir}`);
       }
     } catch (error) {
       if (error instanceof Error && error.message.includes('Path is not a directory')) {
         throw error;
       }
-      throw new Error(`Cannot access working directory: ${newWorkingDir}`);
+      throw new Error(`Cannot access working directory: ${resolvedWorkingDir}`);
     }
 
     // Kill the current process
     session.process.kill();
 
-    // Create a new process in the new directory
+    // Create a new process in the new directory with the resolved absolute path
     const newProcess = new ClaudeCodeProcess(
-      newWorkingDir,
+      resolvedWorkingDir,
       this.config.claudeCliPath
     );
 
-    // Update session
-    session.workingDir = newWorkingDir;
+    // Update session with the resolved absolute path
+    session.workingDir = resolvedWorkingDir;
     session.process = newProcess;
     session.status = 'idle';
     session.lastActivity = new Date();

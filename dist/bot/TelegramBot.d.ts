@@ -46,6 +46,8 @@ export declare class TelegramBot {
     private static readonly BATCH_DELAY_MS;
     private lastContextInfo;
     private pendingCostCallback;
+    private activeChat;
+    private botUsername;
     constructor(config: TelegramBotConfig | ExtendedTelegramBotConfig);
     /**
      * Set up authorization middleware
@@ -71,6 +73,19 @@ export declare class TelegramBot {
      * Check if a message is a bot command (vs a Claude skill invocation)
      */
     private isBotCommand;
+    /**
+     * Check if a message in a group chat is directed at this bot
+     * Returns true if:
+     * - It's a private chat (always process)
+     * - Message starts with / (command)
+     * - Message mentions the bot (@botname)
+     * - Message is a reply to the bot's message
+     */
+    private isMessageForBot;
+    /**
+     * Strip bot mention from message text for cleaner processing
+     */
+    private stripBotMention;
     /**
      * Set up message handlers for text input
      */
@@ -101,6 +116,7 @@ export declare class TelegramBot {
     private unsubscribeFromSession;
     /**
      * Forward text output to all connected users with message batching
+     * If activeChat is set, prioritize sending to that chat (group support)
      */
     private forwardTextToUsers;
     /**
@@ -136,7 +152,7 @@ export declare class TelegramBot {
      */
     private forwardProgressToUsers;
     /**
-     * Forward a question to all connected users
+     * Forward a question to all connected users (including active group chat)
      */
     private forwardQuestionToUsers;
     /**
