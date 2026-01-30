@@ -11,6 +11,6 @@ export {
   getCommandsByCategory,
   getCommandsForTelegramAPI,
   getAllCommandNames,
-} from './CommandDefinitions';
+} from './CommandDefinitions.js';
 
-export { CommandRegistrationService } from './CommandRegistrationService';
+export { CommandRegistrationService } from './CommandRegistrationService.js';

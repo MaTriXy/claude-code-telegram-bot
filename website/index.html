@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Control Claude Code CLI directly from Telegram. AI-powered coding assistance, anywhere, anytime.">
+    <meta name="keywords" content="Claude Code, Telegram Bot, AI Coding, CLI, Remote Development">
+    <meta name="author" content="Claude Code Telegram Bot">
+    <meta property="og:title" content="Claude Code Telegram Bot">
+    <meta property="og:description" content="Control Claude Code CLI directly from Telegram. AI-powered coding assistance, anywhere, anytime.">
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="./video/demo.mp4">
+    <title>Claude Code Telegram Bot - AI Coding in Your Pocket</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        /* ============================================
+           CSS RESET & BASE STYLES
+           ============================================ */
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            /* Colors */
+            --background: #0a0a0f;
+            --background-alt: #12121a;
+            --background-card: #1a1a24;
+            --text: #e4e4e7;
+            --text-muted: #71717a;
+            --accent: #c084fc;
+            --accent-hover: #a855f7;
+            --accent-glow: rgba(192, 132, 252, 0.3);
+            --border: #27272a;
+            --border-hover: #3f3f46;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --telegram: #0088cc;
+            --claude: #d97706;
+
+            /* Typography */
+            --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            --font-family-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+
+            /* Spacing */
+            --section-padding: clamp(4rem, 10vw, 8rem);
+            --container-max: 1200px;
+            --container-padding: clamp(1rem, 5vw, 2rem);
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: var(--font-family);
+            background: var(--background);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* ============================================
+           UTILITY CLASSES
+           ============================================ */
+        .container {
+            max-width: var(--container-max);
+            margin: 0 auto;
+            padding: 0 var(--container-padding);
+        }
+
+        .section {
+            padding: var(--section-padding) 0;
+        }
+
+        .gradient-text {
+            background: linear-gradient(135deg, var(--accent) 0%, var(--claude) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* ============================================
+           ANIMATIONS
+           ============================================ */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes glowPulse {
+            0%, 100% {
+                box-shadow: 0 0 20px var(--accent-glow);
+            }
+            50% {
+                box-shadow: 0 0 40px var(--accent-glow);
+            }
+        }
+
+        .animate-in {
+            animation: fadeInUp 0.6s ease-out forwards;
+            opacity: 0;
+        }
+
+        .delay-1 { animation-delay: 0.1s; }
+        .delay-2 { animation-delay: 0.2s; }
+        .delay-3 { animation-delay: 0.3s; }
+        .delay-4 { animation-delay: 0.4s; }
+
+        /* ============================================
+           NAVIGATION
+           ============================================ */
+        .nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            background: rgba(10, 10, 15, 0.8);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .nav-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem var(--container-padding);
+            max-width: var(--container-max);
+            margin: 0 auto;
+        }
+
+        .nav-logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-weight: 600;
+            font-size: 1.125rem;
+            color: var(--text);
+            text-decoration: none;
+        }
+
+        .nav-logo-icon {
+            font-size: 1.5rem;
+        }
+
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .nav-link {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.875rem;
+            transition: color 0.2s ease;
+        }
+
+        .nav-link:hover {
+            color: var(--text);
+        }
+
+        .github-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: var(--background-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            text-decoration: none;
+            font-size: 0.875rem;
+            transition: all 0.2s ease;
+        }
+
+        .github-btn:hover {
+            border-color: var(--border-hover);
+            background: var(--background-alt);
+        }
+
+        /* ============================================
+           HERO SECTION
+           ============================================ */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding-top: 6rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(ellipse at top, rgba(192, 132, 252, 0.15) 0%, transparent 50%);
+            pointer-events: none;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.375rem 0.875rem;
+            background: rgba(192, 132, 252, 0.15);
+            border: 1px solid rgba(192, 132, 252, 0.3);
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            color: var(--accent);
+            margin-bottom: 1.5rem;
+        }
+
+        .hero-title {
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 700;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+            max-width: 800px;
+        }
+
+        .hero-subtitle {
+            font-size: clamp(1rem, 2vw, 1.25rem);
+            color: var(--text-muted);
+            max-width: 600px;
+            margin-bottom: 2rem;
+        }
+
+        .hero-cta {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 3rem;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.875rem 1.75rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 500;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            border: none;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px var(--accent-glow);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            color: var(--accent);
+            border: 1px solid var(--accent);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(192, 132, 252, 0.1);
+        }
+
+        .hero-video {
+            width: 100%;
+            max-width: 900px;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            box-shadow: 0 0 60px var(--accent-glow);
+            animation: glowPulse 4s ease-in-out infinite;
+        }
+
+        .hero-video video {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        /* ============================================
+           FEATURES SECTION
+           ============================================ */
+        .features {
+            background: var(--background-alt);
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+
+        .section-title {
+            font-size: clamp(1.75rem, 3vw, 2.5rem);
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+
+        .section-subtitle {
+            color: var(--text-muted);
+            font-size: 1.125rem;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .feature-card {
+            background: var(--background-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            transition: all 0.3s ease;
+        }
+
+        .feature-card:hover {
+            border-color: var(--border-hover);
+            transform: translateY(-4px);
+        }
+
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        .feature-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .feature-description {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+            line-height: 1.6;
+        }
+
+        /* ============================================
+           INSTALLATION SECTION
+           ============================================ */
+        .installation {
+            background: var(--background);
+        }
+
+        .install-steps {
+            max-width: 700px;
+            margin: 0 auto;
+        }
+
+        .install-step {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+            position: relative;
+        }
+
+        .install-step:not(:last-child)::before {
+            content: '';
+            position: absolute;
+            left: 1rem;
+            top: 2.5rem;
+            bottom: -0.5rem;
+            width: 2px;
+            background: var(--border);
+        }
+
+        .step-number {
+            width: 2rem;
+            height: 2rem;
+            background: var(--accent);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }
+
+        .step-content {
+            flex: 1;
+        }
+
+        .step-title {
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+        }
+
+        .code-block {
+            background: #0d0d12;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .code-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1rem;
+            background: var(--background-card);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .code-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .code-dot.red { background: #ef4444; }
+        .code-dot.yellow { background: #f59e0b; }
+        .code-dot.green { background: #22c55e; }
+
+        .code-content {
+            padding: 1rem;
+            font-family: var(--font-family-mono);
+            font-size: 0.875rem;
+            overflow-x: auto;
+            position: relative;
+        }
+
+        .code-content code {
+            color: var(--text);
+            white-space: pre;
+        }
+
+        .copy-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            padding: 0.375rem 0.75rem;
+            background: var(--background-card);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .copy-btn:hover {
+            color: var(--text);
+            border-color: var(--border-hover);
+        }
+
+        /* ============================================
+           SECURITY SECTION
+           ============================================ */
+        .security {
+            background: var(--background-alt);
+        }
+
+        .security-alert {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .security-alert-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .security-alert-icon {
+            font-size: 1.5rem;
+        }
+
+        .security-alert-title {
+            font-weight: 600;
+            color: var(--warning);
+        }
+
+        .security-alert-text {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .security-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .security-item {
+            display: flex;
+            gap: 1rem;
+            align-items: flex-start;
+        }
+
+        .security-icon {
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+
+        .security-item-title {
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }
+
+        .security-item-text {
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        /* ============================================
+           CTA SECTION
+           ============================================ */
+        .cta {
+            background: var(--background);
+            position: relative;
+            text-align: center;
+        }
+
+        .cta::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at center, rgba(192, 132, 252, 0.1) 0%, transparent 70%);
+            pointer-events: none;
+        }
+
+        .cta-content {
+            position: relative;
+            z-index: 1;
+        }
+
+        .cta-title {
+            font-size: clamp(1.75rem, 3vw, 2.5rem);
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+
+        .cta-subtitle {
+            color: var(--text-muted);
+            font-size: 1.125rem;
+            margin-bottom: 2rem;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .cta-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--text-muted);
+            border: none;
+            padding: 0.875rem 1.25rem;
+        }
+
+        .btn-ghost:hover {
+            color: var(--text);
+        }
+
+        /* ============================================
+           FOOTER
+           ============================================ */
+        .footer {
+            background: var(--background-alt);
+            border-top: 1px solid var(--border);
+            padding: 3rem 0 2rem;
+        }
+
+        .footer-content {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .footer-links {
+            display: flex;
+            gap: 2rem;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .footer-link {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.875rem;
+            transition: color 0.2s ease;
+        }
+
+        .footer-link:hover {
+            color: var(--text);
+        }
+
+        .footer-attribution {
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            text-align: center;
+        }
+
+        .footer-attribution a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        .footer-badges {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .footer-badge {
+            padding: 0.25rem 0.5rem;
+            background: var(--background-card);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        /* ============================================
+           RESPONSIVE STYLES
+           ============================================ */
+        @media (max-width: 640px) {
+            .nav-links {
+                gap: 1rem;
+            }
+
+            .nav-link {
+                display: none;
+            }
+
+            .hero-cta {
+                flex-direction: column;
+                width: 100%;
+                padding: 0 1rem;
+            }
+
+            .btn {
+                width: 100%;
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .install-step {
+                flex-direction: column;
+                gap: 1rem;
+            }
+
+            .install-step::before {
+                display: none;
+            }
+
+            .security-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* ============================================
+           REDUCED MOTION
+           ============================================ */
+        @media (prefers-reduced-motion: reduce) {
+            html {
+                scroll-behavior: auto;
+            }
+
+            .animate-in {
+                animation: none;
+                opacity: 1;
+            }
+
+            .hero-video {
+                animation: none;
+            }
+
+            .feature-card:hover,
+            .btn-primary:hover {
+                transform: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <a href="#" class="nav-logo">
+                <span class="nav-logo-icon">🤖</span>
+                <span>Claude Code Telegram Bot</span>
+            </a>
+            <div class="nav-links">
+                <a href="#features" class="nav-link">Features</a>
+                <a href="#installation" class="nav-link">Install</a>
+                <a href="#security" class="nav-link">Security</a>
+                <a href="https://github.com/Benihakak/claude-code-telegram-bot" class="github-btn" target="_blank" rel="noopener">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                    </svg>
+                    <span>GitHub</span>
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero section">
+        <div class="container">
+            <span class="hero-badge animate-in">
+                <span>✨</span>
+                <span>Open Source</span>
+            </span>
+            <h1 class="hero-title animate-in delay-1">
+                <span class="gradient-text">Claude Code</span> in Your Pocket
+            </h1>
+            <p class="hero-subtitle animate-in delay-2">
+                Control Claude Code CLI directly from Telegram. AI-powered coding assistance, anywhere, anytime.
+            </p>
+            <div class="hero-cta animate-in delay-3">
+                <a href="https://github.com/Benihakak/claude-code-telegram-bot" class="btn btn-primary" target="_blank" rel="noopener">
+                    <svg width="20" height="20" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                    </svg>
+                    View on GitHub
+                </a>
+                <a href="#installation" class="btn btn-secondary">
+                    Get Started
+                </a>
+            </div>
+            <div class="hero-video animate-in delay-4">
+                <video autoplay muted loop playsinline>
+                    <source src="./video/demo.mp4" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="features section">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Why Claude Code Telegram Bot?</h2>
+                <p class="section-subtitle">Powerful features for developers on the go</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">📱</div>
+                    <h3 class="feature-title">Remote Access</h3>
+                    <p class="feature-description">Control Claude Code CLI from your phone or any device with Telegram. Code from anywhere.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">💬</div>
+                    <h3 class="feature-title">Session Management</h3>
+                    <p class="feature-description">Create, list, switch between, and close multiple Claude Code sessions with ease.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🎤</div>
+                    <h3 class="feature-title">Voice Messages</h3>
+                    <p class="feature-description">Send voice messages that get transcribed via OpenAI Whisper and sent to Claude.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📁</div>
+                    <h3 class="feature-title">File Uploads</h3>
+                    <p class="feature-description">Upload documents, code files, and images directly to Claude for analysis.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">👥</div>
+                    <h3 class="feature-title">Group Chat Support</h3>
+                    <p class="feature-description">Add the bot to group chats for team collaboration with @mention support.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔄</div>
+                    <h3 class="feature-title">Real-time Progress</h3>
+                    <p class="feature-description">Get notified when Claude is thinking, executing tools, or waiting for input.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Installation Section -->
+    <section id="installation" class="installation section">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Quick Start</h2>
+                <p class="section-subtitle">Get up and running in minutes</p>
+            </div>
+            <div class="install-steps">
+                <div class="install-step">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h3 class="step-title">Install via npm</h3>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span class="code-dot red"></span>
+                                <span class="code-dot yellow"></span>
+                                <span class="code-dot green"></span>
+                            </div>
+                            <div class="code-content">
+                                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                                <code>npm install -g claude-code-telegram-bot</code>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="install-step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h3 class="step-title">Create environment file</h3>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span class="code-dot red"></span>
+                                <span class="code-dot yellow"></span>
+                                <span class="code-dot green"></span>
+                            </div>
+                            <div class="code-content">
+                                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                                <code>TELEGRAM_BOT_TOKEN=your_bot_token_here
+ALLOWED_USER_IDS=123456789
+DEFAULT_WORKING_DIR=/path/to/your/projects</code>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="install-step">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <h3 class="step-title">Start the bot</h3>
+                        <div class="code-block">
+                            <div class="code-header">
+                                <span class="code-dot red"></span>
+                                <span class="code-dot yellow"></span>
+                                <span class="code-dot green"></span>
+                            </div>
+                            <div class="code-content">
+                                <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                                <code>claude-code-telegram-bot</code>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Security Section -->
+    <section id="security" class="security section">
+        <div class="container">
+            <div class="section-header">
+                <h2 class="section-title">Security Considerations</h2>
+                <p class="section-subtitle">Important information about running the bot safely</p>
+            </div>
+            <div class="security-alert">
+                <div class="security-alert-header">
+                    <span class="security-alert-icon">⚠️</span>
+                    <span class="security-alert-title">Important Security Notice</span>
+                </div>
+                <p class="security-alert-text">
+                    This bot runs with <code>--dangerously-skip-permissions</code> enabled. Claude will automatically read, write, delete files, and run commands based on your prompts. Only run in sandboxed or disposable environments.
+                </p>
+            </div>
+            <div class="security-grid">
+                <div class="security-item">
+                    <span class="security-icon">🔐</span>
+                    <div>
+                        <h4 class="security-item-title">Whitelist Security</h4>
+                        <p class="security-item-text">Only authorized Telegram user IDs can interact with the bot.</p>
+                    </div>
+                </div>
+                <div class="security-item">
+                    <span class="security-icon">🛡️</span>
+                    <div>
+                        <h4 class="security-item-title">Environment Isolation</h4>
+                        <p class="security-item-text">Child processes are spawned with sanitized environment variables.</p>
+                    </div>
+                </div>
+                <div class="security-item">
+                    <span class="security-icon">📏</span>
+                    <div>
+                        <h4 class="security-item-title">Rate Limiting</h4>
+                        <p class="security-item-text">Built-in rate limiting and message size limits to prevent abuse.</p>
+                    </div>
+                </div>
+                <div class="security-item">
+                    <span class="security-icon">🚫</span>
+                    <div>
+                        <h4 class="security-item-title">Path Protection</h4>
+                        <p class="security-item-text">File operations restricted to session working directory.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta section">
+        <div class="container">
+            <div class="cta-content">
+                <h2 class="cta-title">Ready to Code Anywhere?</h2>
+                <p class="cta-subtitle">Join developers who've brought Claude Code to their fingertips</p>
+                <div class="cta-buttons">
+                    <a href="https://github.com/Benihakak/claude-code-telegram-bot" class="btn btn-primary" target="_blank" rel="noopener">
+                        ⭐ Star on GitHub
+                    </a>
+                    <a href="https://github.com/Benihakak/claude-code-telegram-bot/issues" class="btn btn-secondary" target="_blank" rel="noopener">
+                        🐛 Report Issue
+                    </a>
+                    <a href="https://github.com/Benihakak/claude-code-telegram-bot/pulls" class="btn btn-ghost" target="_blank" rel="noopener">
+                        🔀 Contribute
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-links">
+                    <a href="https://github.com/Benihakak/claude-code-telegram-bot#readme" class="footer-link">Documentation</a>
+                    <a href="https://github.com/Benihakak/claude-code-telegram-bot/blob/main/CHANGELOG.md" class="footer-link">Changelog</a>
+                    <a href="https://github.com/Benihakak/claude-code-telegram-bot/issues" class="footer-link">Issues</a>
+                    <a href="https://github.com/Benihakak/claude-code-telegram-bot/blob/main/LICENSE" class="footer-link">MIT License</a>
+                </div>
+                <div class="footer-badges">
+                    <span class="footer-badge">TypeScript</span>
+                    <span class="footer-badge">Node.js 18+</span>
+                    <span class="footer-badge">Telegram API</span>
+                </div>
+                <p class="footer-attribution">
+                    Built with ❤️ using Claude Code • Made for developers<br>
+                    🧙 100% Built with <a href="https://a5c.ai" target="_blank" rel="noopener">Babysitter</a>
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Copy code functionality
+        function copyCode(button) {
+            const codeBlock = button.parentElement.querySelector('code');
+            const text = codeBlock.textContent;
+
+            navigator.clipboard.writeText(text).then(() => {
+                const originalText = button.textContent;
+                button.textContent = 'Copied!';
+                button.style.color = 'var(--success)';
+
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.style.color = '';
+                }, 2000);
+            });
+        }
+
+        // Intersection Observer for animations
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.style.opacity = '1';
+                    entry.target.style.transform = 'translateY(0)';
+                }
+            });
+        }, observerOptions);
+
+        // Observe feature cards
+        document.querySelectorAll('.feature-card').forEach((card, index) => {
+            card.style.opacity = '0';
+            card.style.transform = 'translateY(20px)';
+            card.style.transition = `opacity 0.6s ease ${index * 0.1}s, transform 0.6s ease ${index * 0.1}s`;
+            observer.observe(card);
+        });
+
+        // Observe install steps
+        document.querySelectorAll('.install-step').forEach((step, index) => {
+            step.style.opacity = '0';
+            step.style.transform = 'translateY(20px)';
+            step.style.transition = `opacity 0.6s ease ${index * 0.15}s, transform 0.6s ease ${index * 0.15}s`;
+            observer.observe(step);
+        });
+
+        // Observe security items
+        document.querySelectorAll('.security-item').forEach((item, index) => {
+            item.style.opacity = '0';
+            item.style.transform = 'translateY(20px)';
+            item.style.transition = `opacity 0.6s ease ${index * 0.1}s, transform 0.6s ease ${index * 0.1}s`;
+            observer.observe(item);
+        });
+    </script>
+</body>
+</html>

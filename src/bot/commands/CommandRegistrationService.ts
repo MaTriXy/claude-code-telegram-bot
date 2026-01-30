@@ -10,7 +10,7 @@ import { BotCommand } from 'telegraf/types';
 import {
   CommandScope,
   getCommandsForTelegramAPI,
-} from './CommandDefinitions';
+} from './CommandDefinitions.js';
 
 /**
  * Service for registering bot commands with Telegram

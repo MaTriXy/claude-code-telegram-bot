@@ -66,8 +66,12 @@ export class TelegramBot {
   private closeUnsubscribers: Map<string, () => void> = new Map(); // sessionId -> close unsubscribe
   private lastThinkingMessageTime = 0; // Debounce thinking messages
   private static readonly THINKING_DEBOUNCE_MS = 5000; // 5 seconds debounce
-  private waitingForUserResponse = false; // True when a question is pending and we're waiting for user input
-  private suppressedMessages: string[] = []; // Buffer messages while waiting for response
+  // Per-session question state to avoid race conditions across multiple users/sessions
+  // Key: sessionId, Value: true if waiting for user response to a question
+  private waitingForUserResponse: Map<string, boolean> = new Map();
+  // Per-session suppressed messages buffer
+  // Key: sessionId, Value: array of suppressed messages while waiting for response
+  private suppressedMessages: Map<string, string[]> = new Map();
 
   // New feature state
   private voiceHandler: VoiceHandler | null = null;
@@ -419,9 +423,9 @@ export class TelegramBot {
 
         const session = await this.sessionManager.createSession(name, effectiveWorkingDir);
 
-        // Reset waiting state for new session
-        this.waitingForUserResponse = false;
-        this.suppressedMessages = [];
+        // Reset waiting state for new session (per-session tracking)
+        this.waitingForUserResponse.delete(session.id);
+        this.suppressedMessages.delete(session.id);
 
         // Subscribe to session output
         this.subscribeToSessionOutput(session.id);
@@ -482,6 +486,11 @@ export class TelegramBot {
                   { message_thread_id: topic.message_thread_id, parse_mode: 'Markdown' }
                 );
                 console.log(`[AutoTopic] SUCCESS: Created topic "${topicName}" (ID: ${topic.message_thread_id}) for session ${session.id}`);
+
+                // Update command menu to show session interaction commands
+                if (this.commandRegistrationService) {
+                  await this.commandRegistrationService.updateCommandsForChat(chatId, true, true);
+                }
                 return; // Skip the regular reply since we sent to the topic
               } else {
                 console.log(`[/new] Topic created but no message_thread_id returned`);
@@ -504,6 +513,12 @@ export class TelegramBot {
           messageThreadId,
           'Markdown'
         );
+
+        // Update command menu to show session interaction commands
+        if (this.commandRegistrationService) {
+          const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+          await this.commandRegistrationService.updateCommandsForChat(chatId, true, isGroup);
+        }
       } catch (error) {
         const messageText = error instanceof Error ? error.message : 'Unknown error';
         const messageThreadId = this.extractThreadId(ctx.message);
@@ -649,6 +664,15 @@ export class TelegramBot {
 
         await this.sessionManager.closeSession(sessionId);
         await ctx.reply(`Session \`${sessionId}\` closed.`, { parse_mode: 'Markdown' });
+
+        // Update command menu if no active sessions remain
+        if (this.commandRegistrationService) {
+          const remainingSessions = this.sessionManager.listSessions();
+          const hasActiveSessions = remainingSessions.length > 0;
+          const chatId = ctx.chat.id;
+          const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+          await this.commandRegistrationService.updateCommandsForChat(chatId, hasActiveSessions, isGroup);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Session not found';
         await ctx.reply(`Error: ${message}`);
@@ -864,9 +888,9 @@ export class TelegramBot {
           effectiveWorkingDir
         );
 
-        // Reset waiting state for new session
-        this.waitingForUserResponse = false;
-        this.suppressedMessages = [];
+        // Reset waiting state for attached session (per-session tracking)
+        this.waitingForUserResponse.delete(session.id);
+        this.suppressedMessages.delete(session.id);
 
         // Subscribe to session output
         this.subscribeToSessionOutput(session.id);
@@ -2252,10 +2276,6 @@ export class TelegramBot {
           if (question && question.options[optionIndex]) {
             const selectedOption = question.options[optionIndex];
 
-            // Resume normal message forwarding now that user has responded
-            this.waitingForUserResponse = false;
-            console.log('[Answer] User responded, resuming message forwarding');
-
             // Get thread context from last known user thread
             const userId = ctx.from?.id;
             const threadKey = `${chatId}:${userId}`;
@@ -2268,6 +2288,10 @@ export class TelegramBot {
               await ctx.answerCbQuery('No active session');
               return;
             }
+
+            // Resume normal message forwarding now that user has responded (per-session tracking)
+            this.waitingForUserResponse.set(sessionId, false);
+            console.log(`[Answer] User responded for session ${sessionId.substring(0, 8)}..., resuming message forwarding`);
 
             // Send the answer as a new message to Claude using the resolved session
             console.log(`[Answer] Sending answer as new message: "${selectedOption.label}" (session: ${sessionId.substring(0, 8)}...)`);
@@ -2398,10 +2422,6 @@ export class TelegramBot {
         this.awaitingCustomInput.delete(chatId);
         this.pendingQuestions.delete(chatId);
 
-        // Resume normal message forwarding now that user has responded
-        this.waitingForUserResponse = false;
-        console.log('[CustomAnswer] User responded, resuming message forwarding');
-
         // Track which chat is actively communicating with the bot
         this.activeChat = chatId;
 
@@ -2416,6 +2436,9 @@ export class TelegramBot {
             if (boundSessionId) {
               const session = this.sessionManager.getSession(boundSessionId);
               if (session) {
+                // Resume normal message forwarding for this session (per-session tracking)
+                this.waitingForUserResponse.set(boundSessionId, false);
+                console.log(`[CustomAnswer] User responded for session ${boundSessionId.substring(0, 8)}..., resuming message forwarding`);
                 console.log(`[CustomAnswer] Thread ${incomingThreadId} -> Session ${boundSessionId.substring(0, 8)}...`);
                 this.sessionManager.sendToSession(boundSessionId, text);
               } else {
@@ -2444,6 +2467,12 @@ export class TelegramBot {
               }
             }
           } else {
+            // Fall back to active session - clear waiting state for it
+            const activeSession = this.sessionManager.getActiveSession();
+            if (activeSession) {
+              this.waitingForUserResponse.set(activeSession.id, false);
+              console.log(`[CustomAnswer] User responded for active session ${activeSession.id.substring(0, 8)}..., resuming message forwarding`);
+            }
             this.sessionManager.sendToActiveSession(text);
           }
           await this.replyWithThreadSupport(ctx, `Sent: "${text}"`, incomingThreadId);
@@ -2481,14 +2510,6 @@ export class TelegramBot {
       this.activeChat = chatId;
 
       try {
-        // If user sends a new message while a question was pending, clear the waiting state
-        // This handles the case where user ignores the question and sends something else
-        if (this.waitingForUserResponse) {
-          console.log('[Message] User sent new message, clearing pending question state');
-          this.waitingForUserResponse = false;
-          this.pendingQuestions.delete(chatId);
-        }
-
         // Note: Session-thread binding only happens explicitly via /linksession or /new in a thread
         // Regular messages do NOT automatically bind sessions to threads
 
@@ -2506,6 +2527,12 @@ export class TelegramBot {
             // Found a session bound to this thread - send to it directly
             const session = this.sessionManager.getSession(boundSessionId);
             if (session) {
+              // If user sends a new message while a question was pending for this session, clear the waiting state
+              if (this.waitingForUserResponse.get(boundSessionId)) {
+                console.log(`[Message] User sent new message to session ${boundSessionId.substring(0, 8)}..., clearing pending question state`);
+                this.waitingForUserResponse.set(boundSessionId, false);
+                this.pendingQuestions.delete(chatId);
+              }
               console.log(`[Message] Thread ${incomingThreadId} -> Session ${boundSessionId.substring(0, 8)}...`);
               this.sessionManager.sendToSession(boundSessionId, text);
             } else {
@@ -2786,21 +2813,27 @@ export class TelegramBot {
   private setupOutputForwarding(): void {
     // Listen for questions from OutputParser
     this.outputParser.on('question', (question: ParsedQuestion) => {
-      console.log('[OutputParser] Question event received:', question.question.substring(0, 50));
-      // Set flag to suppress subsequent messages until user responds
-      this.waitingForUserResponse = true;
-      this.suppressedMessages = []; // Clear any previously suppressed messages
+      const sessionId = this.currentOutputSessionId;
+      console.log(`[OutputParser] Question event received from session ${sessionId?.substring(0, 8) || 'unknown'}:`, question.question.substring(0, 50));
+      // Set per-session flag to suppress subsequent messages until user responds
+      if (sessionId) {
+        this.waitingForUserResponse.set(sessionId, true);
+        this.suppressedMessages.set(sessionId, []); // Clear any previously suppressed messages
+      }
       this.forwardQuestionToUsers(question);
     });
 
     // Listen for text output (accumulated from streaming deltas)
     this.outputParser.on('text', (text: string) => {
-      // Skip if waiting for user to respond to a question
-      if (this.waitingForUserResponse) {
-        console.log('[OutputParser] Suppressing text while waiting for user response');
-        // Optionally buffer important messages (but for now, just log)
+      const sessionId = this.currentOutputSessionId;
+      // Skip if waiting for user to respond to a question (per-session check)
+      if (sessionId && this.waitingForUserResponse.get(sessionId)) {
+        console.log(`[OutputParser] Suppressing text for session ${sessionId.substring(0, 8)}... while waiting for user response`);
+        // Optionally buffer important messages per session
         if (text && text.trim()) {
-          this.suppressedMessages.push(text.trim());
+          const buffer = this.suppressedMessages.get(sessionId) || [];
+          buffer.push(text.trim());
+          this.suppressedMessages.set(sessionId, buffer);
         }
         return;
       }
@@ -2814,9 +2847,10 @@ export class TelegramBot {
     // Listen for progress events (tool executions)
     // Only show failures to reduce noise - successes are implied
     this.outputParser.on('progress', (progress: { type: string; toolName?: string; success?: boolean }) => {
-      // Skip if waiting for user to respond to a question
-      if (this.waitingForUserResponse) {
-        console.log('[OutputParser] Suppressing progress while waiting for user response');
+      const sessionId = this.currentOutputSessionId;
+      // Skip if waiting for user to respond to a question (per-session check)
+      if (sessionId && this.waitingForUserResponse.get(sessionId)) {
+        console.log(`[OutputParser] Suppressing progress for session ${sessionId.substring(0, 8)}... while waiting for user response`);
         return;
       }
 
@@ -3339,21 +3373,41 @@ export class TelegramBot {
     console.log(`[Question] Detected question: "${question.question.substring(0, 50)}..."`);
     console.log(`[Question] Connected users: ${this.userChatIds.size}, Active chat: ${this.activeChat}`);
 
-    // Get thread context from active session for routing (via ThreadManager)
+    // Get thread context from the session that PRODUCED this output (not the global active session)
+    // This is critical for correct routing when multiple sessions are active in different threads
     let sessionThreadId: number | undefined;
     let sessionChatId: number | string | undefined;
-    const activeSession = this.sessionManager.getActiveSession();
-    if (activeSession) {
-      const sessionThread = this.threadManager?.getThreadForSession(activeSession.id);
+    const outputSessionId = this.currentOutputSessionId;
+    const outputSession = outputSessionId ? this.sessionManager.getSession(outputSessionId) : null;
+
+    console.log(`[Question] OUTPUT ROUTING: currentOutputSessionId=${outputSessionId?.substring(0, 8) || 'null'}`);
+    console.log(`[Question] Global active session: ${this.sessionManager.getActiveSession()?.id.substring(0, 8) || 'none'}`);
+
+    if (outputSession && outputSessionId) {
+      console.log(`[Question] Looking up thread for output session ${outputSessionId.substring(0, 8)}...`);
+      const sessionThread = this.threadManager?.getThreadForSession(outputSessionId);
       if (sessionThread) {
         sessionThreadId = sessionThread.threadId;
         sessionChatId = sessionThread.chatId;
-        console.log(`[Question] Active session ${activeSession.id} bound to thread ${sessionThreadId} in chat ${sessionChatId}`);
+        console.log(`[Question] FOUND: Output session ${outputSessionId.substring(0, 8)}... -> thread ${sessionThreadId} in chat ${sessionChatId}`);
       } else {
-        console.log(`[Question] Active session ${activeSession.id} has no thread binding`);
+        console.log(`[Question] NOT FOUND: Output session ${outputSessionId.substring(0, 8)}... has no thread binding`);
       }
     } else {
-      console.log(`[Question] No active session`);
+      // Fallback to global active session if no output session is tracked
+      const activeSession = this.sessionManager.getActiveSession();
+      if (activeSession) {
+        const sessionThread = this.threadManager?.getThreadForSession(activeSession.id);
+        if (sessionThread) {
+          sessionThreadId = sessionThread.threadId;
+          sessionChatId = sessionThread.chatId;
+          console.log(`[Question] Fallback to active session ${activeSession.id.substring(0, 8)}... bound to thread ${sessionThreadId}`);
+        } else {
+          console.log(`[Question] Active session ${activeSession.id.substring(0, 8)}... has no thread binding`);
+        }
+      } else {
+        console.log(`[Question] No session for question forwarding`);
+      }
     }
 
     // Build list of chats to send to

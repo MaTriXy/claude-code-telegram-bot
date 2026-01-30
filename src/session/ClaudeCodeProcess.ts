@@ -31,6 +31,11 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
   private isFirstMessage = true;
   private existingSessionId: string | null = null; // For attaching to existing sessions
 
+  // Message queue to prevent concurrent process spawning
+  // When a process is running, new messages are queued and sent when the process completes
+  private pendingMessages: string[] = [];
+  private processId: number = 0; // Unique ID to track which process emits events
+
   constructor(
     private workingDir: string,
     private cliPath: string = 'claude',
@@ -87,6 +92,11 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
    */
   private spawnForMessage(prompt: string): void {
     try {
+      // Increment process ID to track which process emits events
+      // This prevents stale event handlers from corrupting state
+      this.processId++;
+      const currentProcessId = this.processId;
+
       // Build args:
       // --print: non-interactive mode (exit after response)
       // --output-format stream-json: parseable streaming output (requires --verbose)
@@ -119,6 +129,8 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
       delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
       // Note: Keep CLAUDE_CODE_USE_FOUNDRY as it may be needed for authentication
 
+      console.log(`[ClaudeCodeProcess] Spawning process #${currentProcessId} for message: "${prompt.substring(0, 50)}..."`);
+
       this.process = spawn(this.resolvedCliPath, args, {
         cwd: this.workingDir,
         // stdin is 'ignore' because --print mode doesn't support interactive input
@@ -130,7 +142,13 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
 
       // Handle stdout
+      // Handle stdout
       this.process.stdout?.on('data', (data: Buffer) => {
+        // Guard against stale event handlers from previous processes
+        if (currentProcessId !== this.processId) {
+          return;
+        }
+
         const text = data.toString();
         this.outputBuffer += text;
 
@@ -156,6 +174,11 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
       // Handle stderr - not all stderr is an error, some is status info
       this.process.stderr?.on('data', (data: Buffer) => {
+        // Guard against stale event handlers from previous processes
+        if (currentProcessId !== this.processId) {
+          return;
+        }
+
         const text = data.toString();
         // Only emit as error if it looks like an actual error
         if (text.toLowerCase().includes('error') || text.toLowerCase().includes('fatal')) {
@@ -167,6 +190,14 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
       // Handle process close
       this.process.on('close', (code) => {
+        // Guard against stale event handlers from previous processes
+        if (currentProcessId !== this.processId) {
+          console.log(`[ClaudeCodeProcess] Ignoring close event from stale process #${currentProcessId} (current is #${this.processId})`);
+          return;
+        }
+
+        console.log(`[ClaudeCodeProcess] Process #${currentProcessId} closed with code ${code}`);
+
         // Emit any remaining buffered output
         if (this.outputBuffer.trim()) {
           // Try to extract session_id from remaining buffer
@@ -193,6 +224,9 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
         // Emit close event for this message completion
         this.emit('message_complete', code);
+
+        // Process any queued messages
+        this.processNextMessage();
       });
 
       // Handle process errors (like ENOENT)
@@ -217,19 +251,37 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
   /**
    * Send input to Claude - spawns a new process for each message
    * but maintains conversation via session ID
+   *
+   * If a process is already running, the message is queued and will be
+   * sent when the current process completes. This prevents race conditions
+   * where multiple processes could interfere with each other.
    */
   send(input: string): void {
     if (!this._isRunning) {
       throw new Error('Process has been killed');
     }
 
-    // If a process is already running, warn but continue
+    // If a process is already running, queue the message instead of spawning
     if (this.process) {
-      console.warn('[ClaudeCodeProcess] Previous message still processing, spawning new process anyway');
+      console.log(`[ClaudeCodeProcess] Process still running, queuing message: "${input.substring(0, 50)}..."`);
+      this.pendingMessages.push(input);
+      return;
     }
 
     // Spawn a new process for this message
     this.spawnForMessage(input);
+  }
+
+  /**
+   * Process the next queued message if any
+   * Called when the current process completes
+   */
+  private processNextMessage(): void {
+    if (this.pendingMessages.length > 0 && !this.process) {
+      const nextMessage = this.pendingMessages.shift()!;
+      console.log(`[ClaudeCodeProcess] Processing queued message: "${nextMessage.substring(0, 50)}..."`);
+      this.spawnForMessage(nextMessage);
+    }
   }
 
   /**
