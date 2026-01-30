@@ -10,6 +10,9 @@ import type {
   VerbosityLevel,
   NotificationPreferences,
   LogLevel,
+  StreamingConfig,
+  StreamingMode,
+  ThreadedModeConfig,
 } from '../types/index.js';
 
 // Load environment variables
@@ -66,9 +69,14 @@ export function getSessionManagerConfig(): SessionManagerConfig {
 export function getTelegramBotConfig(): TelegramBotConfig {
   const token = requireEnv('TELEGRAM_BOT_TOKEN');
   const allowedUserIdsStr = requireEnv('ALLOWED_USER_IDS');
-
+  const streamingConfig = buildStreamingConfig();
+  const threadedModeConfig = buildThreadedModeConfig();
+  console.log('streamingConfig', streamingConfig);
+  console.log('threadedConfig', threadedModeConfig);
   return {
     token,
+    streamingConfig,
+    threadedModeConfig,
     allowedUserIds: parseNumberList(allowedUserIdsStr),
     sessionManagerConfig: getSessionManagerConfig(),
   };
@@ -205,3 +213,235 @@ export function getExtendedTelegramBotConfig(): ExtendedTelegramBotConfig {
     logLevel: getLogLevel(),
   };
 }
+
+// ============================================================================
+// Streaming Configuration
+// ============================================================================
+
+/**
+ * Valid streaming modes
+ */
+const VALID_STREAMING_MODES: StreamingMode[] = ['partial', 'block', 'off'];
+
+/**
+ * Validate and parse streaming mode from environment variable
+ */
+function parseStreamingMode(value: string | undefined, defaultValue: StreamingMode): StreamingMode {
+  if (!value) return defaultValue;
+  const normalized = value.toLowerCase() as StreamingMode;
+  if (VALID_STREAMING_MODES.includes(normalized)) {
+    return normalized;
+  }
+  return defaultValue;
+}
+
+/**
+ * Get whether streaming is enabled from environment
+ */
+export function getStreamingEnabled(): boolean {
+  return parseBool(process.env['STREAMING_ENABLED'], true);
+}
+
+/**
+ * Get streaming mode from environment
+ */
+export function getStreamingMode(): StreamingMode {
+  return parseStreamingMode(process.env['STREAMING_MODE'], 'partial');
+}
+
+/**
+ * Get streaming block size from environment
+ */
+export function getStreamingBlockSize(): number {
+  return parseNumber(process.env['STREAMING_BLOCK_SIZE'], 50);
+}
+
+/**
+ * Get streaming update interval in milliseconds from environment
+ */
+export function getStreamingUpdateInterval(): number {
+  return parseNumber(process.env['STREAMING_UPDATE_INTERVAL_MS'], 200);
+}
+
+/**
+ * Build StreamingConfig from environment variables
+ */
+export function buildStreamingConfig(): StreamingConfig {
+  return {
+    enabled: getStreamingEnabled(),
+    mode: getStreamingMode(),
+    blockSize: getStreamingBlockSize(),
+    updateIntervalMs: getStreamingUpdateInterval(),
+  };
+}
+
+// ============================================================================
+// Threaded Mode Configuration
+// ============================================================================
+
+/**
+ * Get whether threaded mode is enabled from environment
+ * Default: false (threaded mode is opt-in)
+ */
+export function getThreadedModeEnabled(): boolean {
+  return parseBool(process.env['THREADED_MODE_ENABLED'], true);
+}
+
+/**
+ * Get whether auto-create topics is enabled from environment
+ */
+export function getThreadedAutoCreate(): boolean {
+  return parseBool(process.env['THREADED_AUTO_CREATE'], true);
+}
+
+/**
+ * Get default topic name prefix from environment
+ */
+export function getThreadedDefaultTopic(): string | undefined {
+  const value = 'claude-code-';
+  return value && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+/**
+ * Build ThreadedModeConfig from environment variables
+ */
+export function buildThreadedModeConfig(): ThreadedModeConfig {
+  return {
+    enabled: getThreadedModeEnabled(),
+    autoCreateTopics: getThreadedAutoCreate(),
+    topicNamePrefix: getThreadedDefaultTopic(),
+  };
+}
+
+// ============================================================================
+// Configuration Validation
+// ============================================================================
+
+/**
+ * Validation result for configuration
+ */
+export interface ConfigValidationResult {
+  isValid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+/**
+ * Validate streaming configuration values
+ */
+export function validateStreamingConfig(config: StreamingConfig): ConfigValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // Validate mode
+  if (!VALID_STREAMING_MODES.includes(config.mode)) {
+    errors.push(`Invalid streaming mode: ${config.mode}. Valid values: ${VALID_STREAMING_MODES.join(', ')}`);
+  }
+
+  // Validate block size
+  if (config.blockSize < 1) {
+    errors.push(`Streaming block size must be at least 1, got: ${config.blockSize}`);
+  } else if (config.blockSize > 4096) {
+    warnings.push(`Streaming block size ${config.blockSize} is very large, consider using a smaller value`);
+  }
+
+  // Validate update interval
+  if (config.updateIntervalMs < 50) {
+    errors.push(`Streaming update interval must be at least 50ms, got: ${config.updateIntervalMs}ms`);
+  } else if (config.updateIntervalMs < 100) {
+    warnings.push(`Streaming update interval ${config.updateIntervalMs}ms is very short, may cause rate limiting`);
+  }
+
+  // Warn if enabled but mode is 'off'
+  if (config.enabled && config.mode === 'off') {
+    warnings.push("Streaming is enabled but mode is 'off', streaming will not be active");
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
+/**
+ * Validate threaded mode configuration values
+ */
+export function validateThreadedModeConfig(config: ThreadedModeConfig): ConfigValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+
+  // Validate topic name prefix if auto-create is enabled
+  if (config.autoCreateTopics && !config.topicNamePrefix) {
+    warnings.push('Auto-create topics is enabled but no topic name prefix is set');
+  }
+
+  // Validate topic name prefix length
+  if (config.topicNamePrefix && config.topicNamePrefix.length > 100) {
+    errors.push(`Topic name prefix too long: ${config.topicNamePrefix.length} chars (max 100)`);
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+    warnings,
+  };
+}
+
+/**
+ * Validate all streaming and threaded mode configuration
+ */
+export function validateAllConfig(): ConfigValidationResult {
+  const streamingConfig = buildStreamingConfig();
+  const threadedConfig = buildThreadedModeConfig();
+  const streamingValidation = validateStreamingConfig(streamingConfig);
+  const threadedValidation = validateThreadedModeConfig(threadedConfig);
+
+  return {
+    isValid: streamingValidation.isValid && threadedValidation.isValid,
+    errors: [...streamingValidation.errors, ...threadedValidation.errors],
+    warnings: [...streamingValidation.warnings, ...threadedValidation.warnings],
+  };
+}
+
+// ============================================================================
+// Configuration Constants (for reference)
+// ============================================================================
+
+/**
+ * Environment variable names for streaming configuration
+ */
+export const STREAMING_CONFIG_ENV_KEYS = {
+  STREAMING_MODE: 'STREAMING_MODE',
+  STREAMING_ENABLED: 'STREAMING_ENABLED',
+  STREAMING_BLOCK_SIZE: 'STREAMING_BLOCK_SIZE',
+  STREAMING_UPDATE_INTERVAL_MS: 'STREAMING_UPDATE_INTERVAL_MS',
+} as const;
+
+/**
+ * Environment variable names for threaded mode configuration
+ */
+export const THREADED_MODE_CONFIG_ENV_KEYS = {
+  THREADED_MODE_ENABLED: 'THREADED_MODE_ENABLED',
+  THREADED_AUTO_CREATE: 'THREADED_AUTO_CREATE',
+  THREADED_DEFAULT_TOPIC: 'THREADED_DEFAULT_TOPIC',
+} as const;
+
+/**
+ * Default values for streaming configuration
+ */
+export const STREAMING_CONFIG_DEFAULTS = {
+  STREAMING_MODE: 'partial' as StreamingMode,
+  STREAMING_ENABLED: true,
+  STREAMING_BLOCK_SIZE: 50,
+  STREAMING_UPDATE_INTERVAL_MS: 200,
+} as const;
+
+/**
+ * Default values for threaded mode configuration
+ */
+export const THREADED_MODE_CONFIG_DEFAULTS = {
+  THREADED_MODE_ENABLED: true,
+  THREADED_AUTO_CREATE: false,
+  THREADED_DEFAULT_TOPIC: '',
+} as const;

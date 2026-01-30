@@ -6,6 +6,9 @@ import type {
   TelegramFormattedMessage,
   QuestionOption,
   InlineButton,
+  StreamingDeltaEvent,
+  StreamingCompleteEvent,
+  StreamingStartEvent,
 } from '../types/index.js';
 
 const MAX_DESCRIPTION_LENGTH = 100;
@@ -26,13 +29,149 @@ interface AskUserQuestionInput {
 }
 
 /**
+ * Configuration options for OutputParser
+ */
+export interface OutputParserOptions {
+  /** Enable streaming events (streaming_start, streaming_delta, streaming_complete) */
+  streamingEnabled?: boolean;
+}
+
+/**
  * Parses Claude Code stream-json output
+ *
+ * Events emitted:
+ * - 'output' - Raw parsed output
+ * - 'text' - Complete text content (backward compatible)
+ * - 'question' - Parsed question from AskUserQuestion tool
+ * - 'tool_call' - Tool use detected
+ * - 'progress' - Tool execution progress
+ * - 'thinking' - Claude started processing
+ * - 'started' - Claude session initialized
+ * - 'streaming_start' - New stream began (when streamingEnabled=true)
+ * - 'streaming_delta' - Partial text chunk (when streamingEnabled=true)
+ * - 'streaming_complete' - Stream finished (when streamingEnabled=true)
  */
 export class OutputParser extends EventEmitter {
   private buffer = '';
   private currentTextContent = ''; // Accumulates text from content_block_delta events
   private emittedQuestionIds: Set<string> = new Set(); // Track emitted questions to avoid duplicates
   private lastEmittedText = ''; // Track last emitted text to avoid duplicates
+
+  // Streaming-related properties
+  private streamingEnabled = false; // Whether streaming mode is enabled
+  private streamingAccumulator = ''; // Accumulates text for current stream
+  private isCurrentlyStreaming = false; // Whether we are currently in a streaming block
+  private streamStartTime = 0; // Timestamp when streaming started
+  private streamChunkCount = 0; // Number of chunks received in current stream
+
+  /**
+   * Create a new OutputParser
+   * @param options Configuration options
+   */
+  constructor(options: OutputParserOptions = {}) {
+    super();
+    this.streamingEnabled = options.streamingEnabled ?? false;
+  }
+
+  /**
+   * Enable or disable streaming mode
+   * When enabled, emits 'streaming_start', 'streaming_delta', and 'streaming_complete' events
+   * @param enabled Whether streaming events should be emitted
+   */
+  setStreamingEnabled(enabled: boolean): void {
+    this.streamingEnabled = enabled;
+  }
+
+  /**
+   * Check if streaming mode is enabled
+   */
+  isStreamingEnabled(): boolean {
+    return this.streamingEnabled;
+  }
+
+  /**
+   * Check if a stream is currently in progress
+   */
+  isStreamInProgress(): boolean {
+    return this.isCurrentlyStreaming;
+  }
+
+  /**
+   * Get the current accumulated streaming text
+   */
+  getStreamingAccumulatedText(): string {
+    return this.streamingAccumulator;
+  }
+
+  /**
+   * Start a new streaming session
+   * Emits 'streaming_start' event if streaming is enabled
+   */
+  private startStreaming(): void {
+    if (this.isCurrentlyStreaming) {
+      return; // Already streaming
+    }
+
+    this.isCurrentlyStreaming = true;
+    this.streamingAccumulator = '';
+    this.streamStartTime = Date.now();
+    this.streamChunkCount = 0;
+
+    if (this.streamingEnabled) {
+      const event: StreamingStartEvent = {
+        timestamp: this.streamStartTime,
+      };
+      this.emit('streaming_start', event);
+    }
+  }
+
+  /**
+   * Emit a streaming delta event
+   * @param text The partial text chunk
+   */
+  private emitStreamingDelta(text: string): void {
+    if (!text) {
+      return;
+    }
+
+    this.streamChunkCount++;
+    this.streamingAccumulator += text;
+
+    if (this.streamingEnabled) {
+      const event: StreamingDeltaEvent = {
+        text,
+        accumulatedText: this.streamingAccumulator,
+        timestamp: Date.now(),
+      };
+      this.emit('streaming_delta', event);
+    }
+  }
+
+  /**
+   * Complete the current streaming session
+   * Emits 'streaming_complete' event if streaming is enabled
+   */
+  private completeStreaming(): void {
+    if (!this.isCurrentlyStreaming) {
+      return; // Not streaming
+    }
+
+    if (this.streamingEnabled) {
+      const event: StreamingCompleteEvent = {
+        finalText: this.streamingAccumulator,
+        totalChunks: this.streamChunkCount,
+        durationMs: Date.now() - this.streamStartTime,
+        timestamp: Date.now(),
+      };
+      this.emit('streaming_complete', event);
+    }
+
+    // Reset streaming state
+    this.isCurrentlyStreaming = false;
+    this.streamingAccumulator = '';
+    this.streamStartTime = 0;
+    this.streamChunkCount = 0;
+  }
 
   /**
    * Detect if output contains an AskUserQuestion tool call
@@ -198,14 +337,27 @@ export class OutputParser extends EventEmitter {
 
         // Handle streaming content_block_delta events (where actual text comes in)
         if (output.type === 'content_block_delta') {
-          const deltaOutput = output as { type: 'content_block_delta'; delta?: { type?: string; text?: string } };
-          if (deltaOutput.delta?.type === 'text_delta' && deltaOutput.delta?.text) {
-            this.currentTextContent += deltaOutput.delta.text;
+          const deltaOutput = output as {
+            type: 'content_block_delta';
+            delta?: { type?: string; text?: string };
+          };
+          if (
+            deltaOutput.delta?.type === 'text_delta' &&
+            deltaOutput.delta?.text
+          ) {
+            const deltaText = deltaOutput.delta.text;
+            this.currentTextContent += deltaText;
+
+            // Emit streaming_delta event using the helper method
+            this.emitStreamingDelta(deltaText);
           }
         }
 
         // When content block stops, emit accumulated text (with deduplication)
         if (output.type === 'content_block_stop') {
+          // Complete streaming session using the helper method
+          this.completeStreaming();
+
           if (this.currentTextContent.trim()) {
             const textToEmit = this.currentTextContent.trim();
             // Only emit if it's different from the last emitted text
@@ -305,6 +457,9 @@ export class OutputParser extends EventEmitter {
         // Emit thinking event when Claude starts processing
         if (output.type === 'content_block_start') {
           this.emit('thinking');
+
+          // Start streaming session using the helper method
+          this.startStreaming();
         }
 
         // Emit 'started' event when Claude session initializes
@@ -318,6 +473,12 @@ export class OutputParser extends EventEmitter {
         // Fallback: emit any accumulated text when we receive a 'result' event
         // This handles cases where content_block_stop was never received
         if (output.type === 'result') {
+          // Complete streaming if still in progress (fallback)
+          // Must be done before text event to maintain consistent event order
+          if (this.isCurrentlyStreaming) {
+            this.completeStreaming();
+          }
+
           if (this.currentTextContent.trim()) {
             const textToEmit = this.currentTextContent.trim();
             // Only emit if it's different from the last emitted text
@@ -345,5 +506,12 @@ export class OutputParser extends EventEmitter {
     this.currentTextContent = '';
     this.emittedQuestionIds.clear();
     this.lastEmittedText = '';
+
+    // Reset streaming state
+    this.isCurrentlyStreaming = false;
+    this.streamingAccumulator = '';
+    this.streamStartTime = 0;
+    this.streamChunkCount = 0;
   }
 }
+

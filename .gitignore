@@ -41,3 +41,4 @@ logs/
 # Security audit output (contains sensitive findings)
 security-audit-output/
 
+dist/

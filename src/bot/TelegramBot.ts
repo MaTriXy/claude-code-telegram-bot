@@ -15,11 +15,18 @@ import type {
   NotificationPreferences,
   VoiceConfig,
   FileUploadConfig,
+  StreamingConfig,
+  StreamingMode,
+  ThreadedModeConfig,
+  StreamingTelegramBotConfig,
+  SessionContext,
 } from '../types/index.js';
 import { SessionManager } from '../session/SessionManager.js';
 import { OutputParser } from '../parser/OutputParser.js';
 import { ClaudeSessionScanner, VoiceHandler, FileHandler } from '../utils/index.js';
 import { NotificationManager } from '../notifications/index.js';
+import { StreamingService, DraftMessageHandler } from '../streaming/index.js';
+import { ThreadManager, TopicHandler } from '../threaded/index.js';
 
 type TextContext = Context<Update.MessageUpdate<Message.TextMessage>>;
 type CallbackContext = Context<Update.CallbackQueryUpdate>;
@@ -29,7 +36,8 @@ const BOT_COMMANDS = new Set([
   'start', 'help', 'new', 'cd', 'list', 'switch', 'close', 'status', 'abort', 'kill', 'sessions', 'attach',
   'voice', 'notify', 'verbosity', 'upload', 'file', 'diff', 'escape',
   'log', 'pwd', 'git', 'tree', 'bookmark', 'context', 'cost',
-  'babysit' // Alias for /babysitter:call
+  'babysit', // Alias for /babysitter:call
+  'streaming', 'threads', 'topic', 'threadsession', 'threadsessions', 'linksession', 'unlinksession' // Streaming and threaded mode commands
 ]);
 
 // Default notification preferences
@@ -80,8 +88,8 @@ export class TelegramBot {
   // Bookmarks for /bookmark command
   private userBookmarks: Map<number, Map<string, string>> = new Map(); // userId -> (name -> prompt)
 
-  // Rate limiting and message queue
-  private messageQueue: Array<{ chatId: number; message: string; timestamp: number }> = [];
+  // Rate limiting and message queue (with thread support)
+  private messageQueue: Array<{ chatId: number; message: string; timestamp: number; userId?: number; threadId?: number }> = [];
   private isProcessingQueue = false;
   private lastMessageTime: Map<number, number> = new Map(); // chatId -> timestamp
   private static readonly RATE_LIMIT_MS = 1000; // Minimum time between messages to same chat
@@ -90,9 +98,9 @@ export class TelegramBot {
   // Input validation - security hardening (REM-005)
   private static readonly MAX_MESSAGE_LENGTH = 10240; // 10KB max input size
 
-  // Message batching
-  private messageBatchBuffer: Map<number, string[]> = new Map(); // chatId -> pending messages
-  private messageBatchTimer: Map<number, ReturnType<typeof setTimeout>> = new Map();
+  // Message batching (with thread support)
+  private messageBatchBuffer: Map<string, { messages: string[]; userId?: number; threadId?: number }> = new Map(); // `${chatId}:${threadId}` -> batch context
+  private messageBatchTimer: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private static readonly BATCH_DELAY_MS = 500; // Delay before sending batched messages
 
   // Context tracking for /context command
@@ -105,7 +113,26 @@ export class TelegramBot {
   private activeChat: number | null = null; // The chat that should receive responses
   private botUsername: string | null = null; // Bot's username for mention detection
 
-  constructor(config: TelegramBotConfig | ExtendedTelegramBotConfig) {
+  // Streaming support (Bot API 9.3)
+  private streamingService: StreamingService | null = null;
+  private draftHandler: DraftMessageHandler | null = null;
+  private streamingConfig: StreamingConfig;
+  private userStreamingMode: Map<number, StreamingMode> = new Map(); // userId -> streaming mode
+
+  // Threaded mode support (forum topics)
+  private threadManager: ThreadManager | null = null;
+  private topicHandler: TopicHandler | null = null;
+  private threadedModeConfig: ThreadedModeConfig;
+  private userThreadedMode: Map<number, boolean> = new Map(); // userId -> threaded mode enabled
+  private userLastThreadId: Map<string, number> = new Map(); // `${chatId}:${userId}` -> last seen thread_id
+  // Note: Session-to-thread mapping is now handled exclusively by ThreadManager
+  // The private sessionThreadMapping property has been removed in favor of threadManager.getThreadForSession()
+
+  // Track which session is currently producing output (for correct thread routing)
+  // This is set before parsing output and used in forwardTextToUsers
+  private currentOutputSessionId: string | null = null;
+
+  constructor(config: TelegramBotConfig | ExtendedTelegramBotConfig | StreamingTelegramBotConfig) {
     this.bot = new Telegraf(config.token);
     this.sessionManager = new SessionManager(config.sessionManagerConfig);
     this.outputParser = new OutputParser();
@@ -139,11 +166,79 @@ export class TelegramBot {
       defaults: this.defaultNotificationPrefs,
     });
 
+    // Initialize streaming config (Bot API 9.3)
+    const streamConfig = config as StreamingTelegramBotConfig;
+    this.streamingConfig = streamConfig.streamingConfig || {
+      mode: 'off',
+      blockSize: 100,
+      updateIntervalMs: 500,
+      enabled: false,
+    };
+
+    // Initialize threaded mode config
+    this.threadedModeConfig = streamConfig.threadedModeConfig || {
+      enabled: false,
+      autoCreateTopics: false,
+      topicNamePrefix: 'Chat',
+    };
+
+    // Initialize streaming service if enabled
+    if (this.streamingConfig.enabled) {
+      this.streamingService = new StreamingService(config.token, this.streamingConfig);
+      this.draftHandler = new DraftMessageHandler(this.streamingService, {
+        streamingConfig: this.streamingConfig,
+      });
+      this.setupStreamingEventHandlers();
+    }
+
+    // Initialize thread manager if enabled
+    if (this.threadedModeConfig.enabled) {
+      this.threadManager = new ThreadManager(this.threadedModeConfig, config.token);
+      this.topicHandler = new TopicHandler(config.token);
+      this.setupThreadEventHandlers();
+    }
+
     this.setupMiddleware();
     this.setupCommands();
     this.setupCallbackHandlers();
     this.setupMessageHandlers();
     this.setupOutputForwarding();
+  }
+
+  /**
+   * Set up streaming event handlers for error handling
+   */
+  private setupStreamingEventHandlers(): void {
+    if (!this.streamingService) return;
+
+    this.streamingService.on('error', (error: Error, chatId: number | string) => {
+      console.error(`[Streaming] Error for chat ${chatId}:`, error.message);
+    });
+
+    this.streamingService.on('rate_limited', (retryAfter: number, chatId: number | string) => {
+      console.warn(`[Streaming] Rate limited for chat ${chatId}, retry after ${retryAfter}s`);
+    });
+
+    if (this.draftHandler) {
+      this.draftHandler.on('error', (error: Error, chatId: number | string) => {
+        console.error(`[DraftHandler] Error for chat ${chatId}:`, error.message);
+      });
+    }
+  }
+
+  /**
+   * Set up thread manager event handlers
+   */
+  private setupThreadEventHandlers(): void {
+    if (!this.threadManager) return;
+
+    this.threadManager.on('error', (error: Error, chatId: number | string) => {
+      console.error(`[ThreadManager] Error for chat ${chatId}:`, error.message);
+    });
+
+    this.threadManager.on('topic_created', (chatId: number | string, topic: { name: string; message_thread_id: number }) => {
+      console.log(`[ThreadManager] Topic created in chat ${chatId}: ${topic.name} (thread_id: ${topic.message_thread_id})`);
+    });
   }
 
   /**
@@ -195,7 +290,7 @@ export class TelegramBot {
         '🤖 Welcome to Claude Code Bot!\n\n' +
           'Control Claude Code CLI remotely from Telegram.\n\n' +
           'Session Commands:\n' +
-          '/new <name> [dir] - Create new session\n' +
+          '/new <name> [dir] [--no-topic] - Create new session\n' +
           '/list - List all sessions\n' +
           '/switch <id> - Switch to session\n' +
           '/status - Current session info\n' +
@@ -226,7 +321,7 @@ export class TelegramBot {
           '⭐ Recommended:\n' +
           '/babysit [task] - Start Babysitter for complex workflows\n\n' +
           'Session Management:\n' +
-          '/new <name> [workingDir] - Create a new session\n' +
+          '/new <name> [dir] [--no-topic] - Create a new session (auto-creates topic in forums)\n' +
           '/sessions - List existing Claude sessions on system\n' +
           '/attach <id> [dir] - Attach to existing session\n' +
           '/list - List active Telegram sessions\n' +
@@ -254,6 +349,13 @@ export class TelegramBot {
           '/upload [on|off] - Toggle file upload\n' +
           '/verbosity [level] - Set output verbosity (minimal|normal|verbose)\n' +
           '/notify [type] [on|off] - Configure notifications\n\n' +
+          'Threaded Mode:\n' +
+          '/threads [on|off] - Toggle threaded mode\n' +
+          '/topic <create|list|use|check> - Manage forum topics\n' +
+          '/threadsession - Show session bound to current thread\n' +
+          '/threadsessions - List all sessions and their thread bindings\n' +
+          '/linksession <id> - Link a session to current thread\n' +
+          '/unlinksession - Unlink session from current thread\n\n' +
           'When Claude asks questions, use the inline buttons or type a custom response.\n' +
           'You can send voice messages and upload files when enabled.\n\n' +
           '═══════════════════════════════\n' +
@@ -265,21 +367,30 @@ export class TelegramBot {
     // /new - Create new session
     this.bot.command('new', async (ctx) => {
       try {
-        // Parse command: /new <name> [workingDir]
+        // Parse command: /new <name> [workingDir] [--no-topic]
         // Working dir is optional and can contain spaces if quoted
         const fullText = ctx.message.text;
         const withoutCommand = fullText.replace(/^\/new\s*/, '').trim();
+        const chatId = ctx.chat.id;
+        const userId = ctx.from?.id;
+
+        // Parse --no-topic flag
+        const noTopicFlag = withoutCommand.includes('--no-topic');
+        const cleanedArgs = withoutCommand.replace('--no-topic', '').trim();
+
+        // Extract thread_id from the command message for thread support
+        const messageThreadId = this.extractThreadId(ctx.message);
 
         let name: string;
         let workingDir: string | undefined;
 
-        if (!withoutCommand) {
+        if (!cleanedArgs) {
           // No args: /new
           name = `session-${Date.now()}`;
           workingDir = undefined;
         } else {
           // Split by spaces, first arg is name
-          const parts = withoutCommand.split(/\s+/);
+          const parts = cleanedArgs.split(/\s+/);
           name = parts[0];
           // Rest is working dir (join back in case path has spaces)
           workingDir = parts.length > 1 ? parts.slice(1).join(' ') : undefined;
@@ -295,7 +406,7 @@ export class TelegramBot {
           // Unsubscribe from old session output
           this.unsubscribeFromSession(existingSession.id);
           await this.sessionManager.closeSession(existingSession.id);
-          await ctx.reply(`Closed existing session "${name}"`);
+          await this.replyWithThreadSupport(ctx, `Closed existing session "${name}"`, messageThreadId);
         }
 
         const session = await this.sessionManager.createSession(name, effectiveWorkingDir);
@@ -307,17 +418,88 @@ export class TelegramBot {
         // Subscribe to session output
         this.subscribeToSessionOutput(session.id);
 
-        await ctx.reply(
+        // If threaded mode enabled and we have a threadId, bind session to this thread
+        // Session-thread binding is handled exclusively by ThreadManager
+        if (this.threadManager && this.isThreadedModeEnabledForUser(userId ?? 0) && messageThreadId !== undefined) {
+          const sessionContext: SessionContext = {
+            chatId,
+            threadId: messageThreadId,
+            userId,
+          };
+          this.sessionManager.setActiveSessionForContext(sessionContext, session.id);
+          this.threadManager.setSessionForThread(chatId, messageThreadId, session.id);
+          console.log(`[Threads] Bound new session ${session.id.substring(0, 8)}... to thread ${messageThreadId}`);
+        }
+
+        // Auto-create topic in forum groups (if not disabled and handlers available)
+        console.log(`[/new] Checking auto-topic: topicHandler=${!!this.topicHandler}, threadManager=${!!this.threadManager}, noTopicFlag=${noTopicFlag}, messageThreadId=${messageThreadId}`);
+        if (this.topicHandler && this.threadManager && !noTopicFlag && messageThreadId === undefined) {
+          try {
+            // Check if this is a forum group
+            const isForumEnabled = await this.topicHandler.checkForumEnabled(chatId);
+            console.log(`[/new] Forum enabled check: ${isForumEnabled}`);
+            if (isForumEnabled) {
+              // Create topic for this session
+              const topicName = `Session: ${session.name || session.id.slice(0, 8)}`;
+              console.log(`[/new] Creating topic: "${topicName}" for session ${session.id}`);
+              const topic = await this.topicHandler.createTopic(chatId, { name: topicName });
+              console.log(`[/new] Topic created: ${JSON.stringify(topic)}`);
+
+              if (topic?.message_thread_id) {
+                console.log(`[/new] Binding session ${session.id} to thread ${topic.message_thread_id}`);
+                // Bind session to the new topic
+                this.threadManager.setSessionForThread(chatId, topic.message_thread_id, session.id);
+
+                // Verify the binding was successful
+                const verifySession = this.threadManager.getSessionForThread(chatId, topic.message_thread_id);
+                const verifyThread = this.threadManager.getThreadForSession(session.id);
+                console.log(`[/new] VERIFY after binding: getSessionForThread=${verifySession}, getThreadForSession=${JSON.stringify(verifyThread)}`);
+
+                // Update session context for the new topic
+                const sessionContext: SessionContext = {
+                  chatId,
+                  threadId: topic.message_thread_id,
+                  userId,
+                };
+                this.sessionManager.setActiveSessionForContext(sessionContext, session.id);
+
+                // Send confirmation to the NEW topic (not main chat)
+                await this.bot.telegram.sendMessage(
+                  chatId,
+                  `Session created and bound to this topic!\n\n` +
+                    `ID: \`${session.id}\`\n` +
+                    `Name: ${session.name}\n` +
+                    `Directory: ${session.workingDir}\n` +
+                    `Status: ${session.status}`,
+                  { message_thread_id: topic.message_thread_id, parse_mode: 'Markdown' }
+                );
+                console.log(`[AutoTopic] SUCCESS: Created topic "${topicName}" (ID: ${topic.message_thread_id}) for session ${session.id}`);
+                return; // Skip the regular reply since we sent to the topic
+              } else {
+                console.log(`[/new] Topic created but no message_thread_id returned`);
+              }
+            }
+          } catch (error) {
+            console.warn(`[AutoTopic] Failed to create topic for session: ${error}`);
+            // Fall through to normal behavior
+          }
+        } else {
+          console.log(`[/new] Skipping auto-topic creation`);
+        }
+
+        await this.replyWithThreadSupport(ctx,
           `Session created!\n\n` +
             `ID: \`${session.id}\`\n` +
             `Name: ${session.name}\n` +
             `Directory: ${session.workingDir}\n` +
             `Status: ${session.status}`,
-          { parse_mode: 'Markdown' }
+          messageThreadId,
+          'Markdown'
         );
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error';
-        await ctx.reply(`Error creating session: ${message}`);
+        const messageText = error instanceof Error ? error.message : 'Unknown error';
+        const messageThreadId = this.extractThreadId(ctx.message);
+        await this.replyWithThreadSupport(ctx, `Error creating session: ${messageText}`, messageThreadId);
       }
     });
 
@@ -364,6 +546,12 @@ export class TelegramBot {
         return;
       }
 
+      // Get thread mappings if threaded mode is enabled
+      let threadMappings: Map<string, { chatId: number | string; threadId: number }> | null = null;
+      if (this.threadManager && this.threadedModeConfig.enabled) {
+        threadMappings = this.threadManager.getAllSessionMappings();
+      }
+
       let message = 'Sessions:\n\n';
       for (const session of sessions) {
         const isActive = activeSession?.id === session.id;
@@ -371,7 +559,19 @@ export class TelegramBot {
         message += `${marker}\`${session.id}\`\n`;
         message += `   Name: ${session.name}\n`;
         message += `   Status: ${session.status}\n`;
-        message += `   Dir: ${session.workingDir}\n\n`;
+        message += `   Dir: ${session.workingDir}\n`;
+
+        // Show thread binding if threaded mode is enabled
+        if (threadMappings) {
+          const mapping = threadMappings.get(session.id);
+          if (mapping) {
+            message += `   Thread: ${mapping.threadId} (Chat: ${mapping.chatId})\n`;
+          } else {
+            message += `   Thread: (not bound)\n`;
+          }
+        }
+
+        message += '\n';
       }
 
       await ctx.reply(message, { parse_mode: 'Markdown' });
@@ -381,18 +581,35 @@ export class TelegramBot {
     this.bot.command('switch', async (ctx) => {
       try {
         const sessionId = ctx.message.text.split(' ')[1];
+        const chatId = ctx.chat.id;
+        const userId = ctx.from?.id;
+        const messageThreadId = this.extractThreadId(ctx.message);
+
         if (!sessionId) {
-          await ctx.reply('Usage: /switch <sessionId>');
+          await this.replyWithThreadSupport(ctx, 'Usage: /switch <sessionId>', messageThreadId);
           return;
         }
 
         const session = this.sessionManager.switchSession(sessionId);
-        await ctx.reply(`Switched to session: ${session.name} (\`${session.id}\`)`, {
-          parse_mode: 'Markdown',
-        });
+
+        // If threaded mode enabled and we have a threadId, bind session to this thread
+        // Session-thread binding is handled exclusively by ThreadManager
+        if (this.threadManager && this.isThreadedModeEnabledForUser(userId ?? 0) && messageThreadId !== undefined) {
+          const sessionContext: SessionContext = {
+            chatId,
+            threadId: messageThreadId,
+            userId,
+          };
+          this.sessionManager.setActiveSessionForContext(sessionContext, session.id);
+          this.threadManager.setSessionForThread(chatId, messageThreadId, session.id);
+          console.log(`[Threads] Bound switched session ${session.id.substring(0, 8)}... to thread ${messageThreadId}`);
+        }
+
+        await this.replyWithThreadSupport(ctx, `Switched to session: ${session.name} (\`${session.id}\`)`, messageThreadId, 'Markdown');
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Session not found';
-        await ctx.reply(`Error: ${message}`);
+        const messageThreadId = this.extractThreadId(ctx.message);
+        await this.replyWithThreadSupport(ctx, `Error: ${message}`, messageThreadId);
       }
     });
 
@@ -503,11 +720,16 @@ export class TelegramBot {
     this.bot.command('attach', async (ctx) => {
       try {
         const args = ctx.message.text.split(' ').slice(1);
+        const chatId = ctx.chat.id;
+        const userId = ctx.from?.id;
+        const messageThreadId = this.extractThreadId(ctx.message);
+
         if (args.length === 0) {
-          await ctx.reply(
+          await this.replyWithThreadSupport(ctx,
             'Usage: /attach <session-id> [working-dir]\n\n' +
             'Use /sessions to see available sessions.\n' +
-            'You can use partial session IDs (first 8 characters).'
+            'You can use partial session IDs (first 8 characters).',
+            messageThreadId
           );
           return;
         }
@@ -522,7 +744,10 @@ export class TelegramBot {
         );
 
         if (!matchingSession) {
-          await ctx.reply(`No session found matching "${partialId}". Use /sessions to see available sessions.`);
+          await this.replyWithThreadSupport(ctx,
+            `No session found matching "${partialId}". Use /sessions to see available sessions.`,
+            messageThreadId
+          );
           return;
         }
 
@@ -543,17 +768,32 @@ export class TelegramBot {
         // Subscribe to session output
         this.subscribeToSessionOutput(session.id);
 
-        await ctx.reply(
-          `🔗 *Attached to existing session!*\n\n` +
+        // If threaded mode enabled and we have a threadId, bind session to this thread
+        // Session-thread binding is handled exclusively by ThreadManager
+        if (this.threadManager && this.isThreadedModeEnabledForUser(userId ?? 0) && messageThreadId !== undefined) {
+          const sessionContext: SessionContext = {
+            chatId,
+            threadId: messageThreadId,
+            userId,
+          };
+          this.sessionManager.setActiveSessionForContext(sessionContext, session.id);
+          this.threadManager.setSessionForThread(chatId, messageThreadId, session.id);
+          console.log(`[Threads] Bound attached session ${session.id.substring(0, 8)}... to thread ${messageThreadId}`);
+        }
+
+        await this.replyWithThreadSupport(ctx,
+          `Attached to existing session!\n\n` +
           `Session ID: \`${matchingSession.sessionId.substring(0, 8)}...\`\n` +
           `Project: ${matchingSession.projectName}\n` +
           `Directory: ${effectiveWorkingDir}\n\n` +
           `Send a message to continue this session.`,
-          { parse_mode: 'Markdown' }
+          messageThreadId,
+          'Markdown'
         );
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to attach';
-        await ctx.reply(`Error: ${message}`);
+        const messageText = error instanceof Error ? error.message : 'Failed to attach';
+        const messageThreadId = this.extractThreadId(ctx.message);
+        await this.replyWithThreadSupport(ctx, `Error: ${messageText}`, messageThreadId);
       }
     });
 
@@ -1213,11 +1453,487 @@ export class TelegramBot {
         const fullCommand = args ? `/babysitter:call ${args}` : '/babysitter:call';
         this.sessionManager.sendToActiveSession(fullCommand);
 
-        await ctx.reply('🤹 Sent to the Babysitter.');
+        await ctx.reply('Sent to the Babysitter.');
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to send to Babysitter';
         await ctx.reply(`Error: ${message}`);
       }
+    });
+
+    // /streaming - Configure streaming mode (Bot API 9.3)
+    this.bot.command('streaming', async (ctx) => {
+      const userId = ctx.from?.id;
+      if (!userId) return;
+
+      const args = ctx.message.text.split(' ').slice(1);
+      const subcommand = args[0]?.toLowerCase();
+
+      // Check if streaming is configured
+      if (!this.streamingConfig.enabled) {
+        await ctx.reply(
+          'Streaming is not enabled in bot configuration.\n' +
+          'Set streamingConfig.enabled=true in your bot config.'
+        );
+        return;
+      }
+
+      if (!subcommand) {
+        // Show current settings
+        const currentMode = this.getUserStreamingMode(userId);
+        await ctx.reply(
+          `Streaming Settings\n\n` +
+          `Mode: ${currentMode}\n` +
+          `Block size: ${this.streamingConfig.blockSize} chars\n` +
+          `Update interval: ${this.streamingConfig.updateIntervalMs}ms\n\n` +
+          `Usage:\n` +
+          `/streaming partial - Stream as text arrives\n` +
+          `/streaming block - Send in blocks\n` +
+          `/streaming off - Disable streaming\n\n` +
+          `Note: Streaming uses Telegram Bot API 9.3 draft messages.`
+        );
+        return;
+      }
+
+      if (subcommand === 'partial' || subcommand === 'block' || subcommand === 'off') {
+        this.setUserStreamingMode(userId, subcommand as StreamingMode);
+        await ctx.reply(`Streaming mode set to: ${subcommand}`);
+      } else {
+        await ctx.reply('Invalid mode. Use: partial, block, or off');
+      }
+    });
+
+    // /threads - Configure threaded mode (forum topics)
+    this.bot.command('threads', async (ctx) => {
+      const userId = ctx.from?.id;
+      const chatId = ctx.chat?.id;
+      if (!userId || !chatId) return;
+
+      const args = ctx.message.text.split(' ').slice(1);
+      const subcommand = args[0]?.toLowerCase();
+
+      if (!subcommand) {
+        // Show current settings
+        const isEnabled = this.isThreadedModeEnabledForUser(userId);
+        const currentThreadId = this.getUserThreadId(chatId, userId);
+        const forumEnabled = this.threadManager?.isForumEnabled(chatId) ?? false;
+
+        await ctx.reply(
+          `Threaded Mode Settings\n\n` +
+          `Threaded mode: ${isEnabled ? 'ON' : 'OFF'}\n` +
+          `Forum enabled: ${forumEnabled ? 'Yes' : 'No'}\n` +
+          `Current thread ID: ${currentThreadId ?? 'None'}\n\n` +
+          `Usage:\n` +
+          `/threads on - Enable threaded mode\n` +
+          `/threads off - Disable threaded mode\n` +
+          `/threads set <id> - Set current thread ID\n` +
+          `/threads clear - Clear thread association\n\n` +
+          `Use /topic to manage forum topics.`
+        );
+        return;
+      }
+
+      if (subcommand === 'on') {
+        this.setUserThreadedMode(userId, true);
+        await ctx.reply('Threaded mode enabled.');
+      } else if (subcommand === 'off') {
+        this.setUserThreadedMode(userId, false);
+        await ctx.reply('Threaded mode disabled.');
+      } else if (subcommand === 'set') {
+        const threadId = parseInt(args[1], 10);
+        if (isNaN(threadId)) {
+          await ctx.reply('Usage: /threads set <thread_id>');
+          return;
+        }
+        this.setUserThread(chatId, userId, threadId);
+        await ctx.reply(`Thread ID set to: ${threadId}`);
+      } else if (subcommand === 'clear') {
+        if (this.threadManager) {
+          this.threadManager.clearThread(chatId, userId);
+        }
+        await ctx.reply('Thread association cleared.');
+      } else {
+        await ctx.reply('Invalid subcommand. Use: on, off, set <id>, or clear');
+      }
+    });
+
+    // /topic - Manage forum topics
+    this.bot.command('topic', async (ctx) => {
+      const userId = ctx.from?.id;
+      const chatId = ctx.chat?.id;
+      if (!userId || !chatId) return;
+
+      const args = ctx.message.text.split(' ').slice(1);
+      const subcommand = args[0]?.toLowerCase();
+
+      if (!this.threadManager) {
+        await ctx.reply(
+          'Topic management is not available.\n' +
+          'Enable threaded mode in your bot configuration.'
+        );
+        return;
+      }
+
+      if (!subcommand) {
+        // Show usage and list topics
+        const topics = this.threadManager.listTopics(chatId);
+        const topicList = topics.length > 0
+          ? topics.map(t => `  - ${t.name} (ID: ${t.message_thread_id})`).join('\n')
+          : '  No cached topics';
+
+        await ctx.reply(
+          `Topic Management\n\n` +
+          `Cached topics:\n${topicList}\n\n` +
+          `Usage:\n` +
+          `/topic create <name> - Create a new topic\n` +
+          `/topic list - List cached topics\n` +
+          `/topic use <id> - Use a topic for messages\n` +
+          `/topic check - Check if forum is enabled\n\n` +
+          `Note: This chat must be a supergroup with forum topics enabled.`
+        );
+        return;
+      }
+
+      if (subcommand === 'create') {
+        const topicName = args.slice(1).join(' ');
+        if (!topicName) {
+          await ctx.reply('Usage: /topic create <name>');
+          return;
+        }
+
+        try {
+          const topic = await this.threadManager.createTopic(chatId, { name: topicName });
+          await ctx.reply(
+            `Topic created!\n\n` +
+            `Name: ${topic.name}\n` +
+            `Thread ID: ${topic.message_thread_id}\n\n` +
+            `Use /threads set ${topic.message_thread_id} to use this topic.`
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to create topic';
+          await ctx.reply(`Error: ${message}`);
+        }
+      } else if (subcommand === 'list') {
+        const topics = this.threadManager.listTopics(chatId);
+        if (topics.length === 0) {
+          await ctx.reply('No cached topics. Create a topic with /topic create <name>');
+          return;
+        }
+
+        const topicList = topics.map(t => `- ${t.name} (ID: ${t.message_thread_id})`).join('\n');
+        await ctx.reply(`Cached topics:\n\n${topicList}`);
+      } else if (subcommand === 'use') {
+        const threadId = parseInt(args[1], 10);
+        if (isNaN(threadId)) {
+          await ctx.reply('Usage: /topic use <thread_id>');
+          return;
+        }
+        this.setUserThread(chatId, userId, threadId);
+        this.setUserThreadedMode(userId, true);
+        await ctx.reply(`Now using topic with thread ID: ${threadId}`);
+      } else if (subcommand === 'check') {
+        try {
+          const isForumEnabled = await this.threadManager.checkForumEnabled(chatId);
+          await ctx.reply(`Forum topics: ${isForumEnabled ? 'Enabled' : 'Not enabled'}`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to check forum status';
+          await ctx.reply(`Error: ${message}`);
+        }
+      } else {
+        await ctx.reply('Invalid subcommand. Use: create, list, use, or check');
+      }
+    });
+
+    // /threadsession - Show the active session for the current thread
+    this.bot.command('threadsession', async (ctx) => {
+      const userId = ctx.from?.id;
+      const chatId = ctx.chat?.id;
+      if (!userId || !chatId) return;
+
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      if (!this.threadManager) {
+        await this.replyWithThreadSupport(ctx,
+          'Threaded mode is not enabled.\n' +
+          'Enable threaded mode in your bot configuration.',
+          messageThreadId
+        );
+        return;
+      }
+
+      if (messageThreadId === undefined) {
+        await ctx.reply(
+          'This command should be used from within a forum topic thread.\n' +
+          'Send this command from a thread to see which session is bound to it.'
+        );
+        return;
+      }
+
+      // Check ThreadManager for session-to-thread mapping
+      const sessionId = this.threadManager.getSessionForThread(chatId, messageThreadId);
+
+      if (sessionId) {
+        const session = this.sessionManager.getSession(sessionId);
+        if (session) {
+          await this.replyWithThreadSupport(ctx,
+            `Thread Session Info\n\n` +
+            `Thread ID: ${messageThreadId}\n` +
+            `Session ID: \`${session.id}\`\n` +
+            `Session Name: ${session.name}\n` +
+            `Working Directory: ${session.workingDir}\n` +
+            `Status: ${session.status}`,
+            messageThreadId,
+            'Markdown'
+          );
+        } else {
+          await this.replyWithThreadSupport(ctx,
+            `Thread ${messageThreadId} is bound to session ${sessionId.substring(0, 8)}...\n` +
+            `But the session no longer exists. Use /new to create a new session.`,
+            messageThreadId
+          );
+        }
+      } else {
+        // Also check contextual session from SessionManager
+        const sessionContext: SessionContext = {
+          chatId,
+          threadId: messageThreadId,
+          userId,
+        };
+        const contextSession = this.sessionManager.getActiveSessionForContext(sessionContext);
+
+        if (contextSession) {
+          await this.replyWithThreadSupport(ctx,
+            `Thread Session Info (via context)\n\n` +
+            `Thread ID: ${messageThreadId}\n` +
+            `Session ID: \`${contextSession.id}\`\n` +
+            `Session Name: ${contextSession.name}\n` +
+            `Working Directory: ${contextSession.workingDir}\n` +
+            `Status: ${contextSession.status}`,
+            messageThreadId,
+            'Markdown'
+          );
+        } else {
+          await this.replyWithThreadSupport(ctx,
+            `No session bound to this thread (ID: ${messageThreadId}).\n\n` +
+            `Use /new to create a session that will be bound to this thread.`,
+            messageThreadId
+          );
+        }
+      }
+    });
+
+    // /threadsessions - List all sessions and their thread bindings
+    this.bot.command('threadsessions', async (ctx) => {
+      const userId = ctx.from?.id;
+      const chatId = ctx.chat?.id;
+      if (!userId || !chatId) return;
+
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      // Get all sessions
+      const sessions = this.sessionManager.listSessions();
+
+      if (sessions.length === 0) {
+        await this.replyWithThreadSupport(ctx,
+          'No active sessions.\n\n' +
+          'Use /new to create a new session.',
+          messageThreadId
+        );
+        return;
+      }
+
+      // Build session list with thread bindings
+      let message = 'All Sessions and Thread Bindings:\n\n';
+
+      for (const session of sessions) {
+        // Check if this session is bound to a thread via ThreadManager
+        let threadBinding = 'No thread';
+        if (this.threadManager) {
+          const threadMapping = this.threadManager.getThreadForSession(session.id);
+          if (threadMapping) {
+            threadBinding = `Thread: ${threadMapping.threadId} (Chat: ${threadMapping.chatId})`;
+          }
+        }
+
+        message += `Session: ${session.name}\n`;
+        message += `  ID: \`${session.id.substring(0, 8)}...\`\n`;
+        message += `  Status: ${session.status}\n`;
+        message += `  Dir: ${session.workingDir}\n`;
+        message += `  -> ${threadBinding}\n\n`;
+      }
+
+      message += 'Use /linksession <id> to link a session to the current thread.\n';
+      message += 'Use /unlinksession to unlink the session from the current thread.';
+
+      await this.replyWithThreadSupport(ctx, message, messageThreadId, 'Markdown');
+    });
+
+    // /linksession <sessionId> - Link a specific session to the current thread
+    this.bot.command('linksession', async (ctx) => {
+      const userId = ctx.from?.id;
+      const chatId = ctx.chat?.id;
+      if (!userId || !chatId) return;
+
+      const messageThreadId = this.extractThreadId(ctx.message);
+      const args = ctx.message.text.split(' ').slice(1);
+      const sessionIdArg = args[0];
+
+      if (!sessionIdArg) {
+        await this.replyWithThreadSupport(ctx,
+          'Usage: /linksession <sessionId>\n\n' +
+          'Link a specific session to the current thread.\n' +
+          'Use /threadsessions to see available session IDs.',
+          messageThreadId
+        );
+        return;
+      }
+
+      if (messageThreadId === undefined) {
+        await ctx.reply(
+          'This command should be used from within a forum topic thread.\n' +
+          'Send this command from a thread to link a session to it.'
+        );
+        return;
+      }
+
+      if (!this.threadManager) {
+        await this.replyWithThreadSupport(ctx,
+          'Threaded mode is not enabled.\n' +
+          'Enable threaded mode in your bot configuration.',
+          messageThreadId
+        );
+        return;
+      }
+
+      // Find session by ID (support partial ID match)
+      const sessions = this.sessionManager.listSessions();
+      const matchingSessions = sessions.filter(s =>
+        s.id === sessionIdArg || s.id.startsWith(sessionIdArg)
+      );
+
+      if (matchingSessions.length === 0) {
+        await this.replyWithThreadSupport(ctx,
+          `Session not found: ${sessionIdArg}\n\n` +
+          'Use /threadsessions to see available sessions.',
+          messageThreadId
+        );
+        return;
+      }
+
+      if (matchingSessions.length > 1) {
+        const sessionList = matchingSessions.map(s =>
+          `  - ${s.name} (${s.id.substring(0, 8)}...)`
+        ).join('\n');
+        await this.replyWithThreadSupport(ctx,
+          `Multiple sessions match "${sessionIdArg}":\n${sessionList}\n\n` +
+          'Please provide a more specific session ID.',
+          messageThreadId
+        );
+        return;
+      }
+
+      const session = matchingSessions[0];
+
+      // Bind session to this thread (ThreadManager handles all session-thread mapping)
+      this.threadManager.setSessionForThread(chatId, messageThreadId, session.id);
+
+      // Also set in SessionManager's contextual sessions (for backward compatibility)
+      const sessionContext: SessionContext = {
+        chatId,
+        threadId: messageThreadId,
+        userId,
+      };
+      this.sessionManager.setActiveSessionForContext(sessionContext, session.id);
+
+      await this.replyWithThreadSupport(ctx,
+        `Session linked to this thread!\n\n` +
+        `Session: ${session.name}\n` +
+        `ID: \`${session.id.substring(0, 8)}...\`\n` +
+        `Thread: ${messageThreadId}\n\n` +
+        `Messages in this thread will now use this session.`,
+        messageThreadId,
+        'Markdown'
+      );
+    });
+
+    // /unlinksession - Unlink the session from the current thread
+    this.bot.command('unlinksession', async (ctx) => {
+      const userId = ctx.from?.id;
+      const chatId = ctx.chat?.id;
+      if (!userId || !chatId) return;
+
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      if (messageThreadId === undefined) {
+        await ctx.reply(
+          'This command should be used from within a forum topic thread.\n' +
+          'Send this command from a thread to unlink its session.'
+        );
+        return;
+      }
+
+      if (!this.threadManager) {
+        await this.replyWithThreadSupport(ctx,
+          'Threaded mode is not enabled.\n' +
+          'Enable threaded mode in your bot configuration.',
+          messageThreadId
+        );
+        return;
+      }
+
+      // Check if there's a session bound to this thread
+      const boundSessionId = this.threadManager.getSessionForThread(chatId, messageThreadId);
+
+      if (!boundSessionId) {
+        // Also check contextual session
+        const sessionContext: SessionContext = {
+          chatId,
+          threadId: messageThreadId,
+          userId,
+        };
+        const contextSession = this.sessionManager.getActiveSessionForContext(sessionContext);
+
+        if (!contextSession) {
+          await this.replyWithThreadSupport(ctx,
+            `No session is bound to this thread (ID: ${messageThreadId}).\n\n` +
+            'Use /linksession <id> to link a session to this thread.',
+            messageThreadId
+          );
+          return;
+        }
+
+        // Clear contextual session only
+        this.sessionManager.clearActiveSessionForContext(sessionContext);
+        await this.replyWithThreadSupport(ctx,
+          `Session unlinked from this thread.\n\n` +
+          `Session: ${contextSession.name}\n` +
+          `Thread: ${messageThreadId}\n\n` +
+          `Messages in this thread will now use the global active session.`,
+          messageThreadId
+        );
+        return;
+      }
+
+      const session = this.sessionManager.getSession(boundSessionId);
+      const sessionName = session?.name || '(unknown)';
+
+      // Clear thread-session mapping in ThreadManager (handles all session-thread cleanup)
+      this.threadManager.clearSessionForThread(chatId, messageThreadId);
+
+      // Clear contextual session in SessionManager (for backward compatibility)
+      const sessionContext: SessionContext = {
+        chatId,
+        threadId: messageThreadId,
+        userId,
+      };
+      this.sessionManager.clearActiveSessionForContext(sessionContext);
+
+      await this.replyWithThreadSupport(ctx,
+        `Session unlinked from this thread.\n\n` +
+        `Session: ${sessionName}\n` +
+        `Thread: ${messageThreadId}\n\n` +
+        `Messages in this thread will now use the global active session.`,
+        messageThreadId
+      );
     });
   }
 
@@ -1461,6 +2177,16 @@ export class TelegramBot {
     this.bot.on('text', async (ctx) => {
       const rawText = ctx.message.text;
       const chatId = ctx.chat.id;
+      const userId = ctx.from?.id;
+
+      // Extract and track message_thread_id if present (forum topic messages)
+      const incomingThreadId = this.extractThreadId(ctx.message);
+      if (userId && incomingThreadId !== undefined && this.threadManager) {
+        // Automatically track the thread the user is messaging from
+        this.setUserThread(chatId, userId, incomingThreadId);
+        this.setUserThreadedMode(userId, true);
+        console.log(`[Threads] User ${userId} messaging from thread ${incomingThreadId} in chat ${chatId}`);
+      }
 
       // IMPORTANT: Check if we're awaiting custom input FIRST (before group filtering)
       // This allows users to type custom responses in groups without mentioning the bot
@@ -1469,8 +2195,9 @@ export class TelegramBot {
 
         // Input length validation
         if (text.length > TelegramBot.MAX_MESSAGE_LENGTH) {
-          await ctx.reply(
-            `Message too long (${text.length} chars). Maximum allowed: ${TelegramBot.MAX_MESSAGE_LENGTH} characters.`
+          await this.replyWithThreadSupport(ctx,
+            `Message too long (${text.length} chars). Maximum allowed: ${TelegramBot.MAX_MESSAGE_LENGTH} characters.`,
+            incomingThreadId
           );
           return;
         }
@@ -1488,11 +2215,48 @@ export class TelegramBot {
         // Send custom response as a new message to Claude
         console.log(`[CustomAnswer] Sending as new message: "${text}"`);
         try {
-          this.sessionManager.sendToActiveSession(text);
-          await ctx.reply(`Sent: "${text}"`);
+          // Use thread-aware session resolution when threaded mode is enabled
+          if (this.threadedModeConfig.enabled && this.threadManager && incomingThreadId !== undefined) {
+            // Use ThreadManager as the canonical source for session-thread mappings
+            const boundSessionId = this.threadManager.getSessionForThread(chatId, incomingThreadId);
+
+            if (boundSessionId) {
+              const session = this.sessionManager.getSession(boundSessionId);
+              if (session) {
+                console.log(`[CustomAnswer] Thread ${incomingThreadId} -> Session ${boundSessionId.substring(0, 8)}...`);
+                this.sessionManager.sendToSession(boundSessionId, text);
+              } else {
+                this.threadManager.clearSessionForThread(chatId, incomingThreadId);
+                await this.replyWithThreadSupport(ctx,
+                  'The session for this thread no longer exists. Use /new to create one.',
+                  incomingThreadId
+                );
+                return;
+              }
+            } else {
+              // No session bound to this thread - auto-create a new session
+              console.log(`[CustomAnswer] Thread ${incomingThreadId} has no binding, auto-creating new session...`);
+
+              try {
+                const sessionName = `thread-${incomingThreadId}-${Date.now()}`;
+                const newSession = await this.sessionManager.createSession(sessionName);
+                this.subscribeToSessionOutput(newSession.id);
+                this.threadManager.setSessionForThread(chatId, incomingThreadId, newSession.id);
+                console.log(`[CustomAnswer] Auto-created session ${newSession.id.substring(0, 8)}... for thread ${incomingThreadId}`);
+                this.sessionManager.sendToSession(newSession.id, text);
+              } catch (error) {
+                const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+                await this.replyWithThreadSupport(ctx, `Failed to create session: ${errorMsg}`, incomingThreadId);
+                return;
+              }
+            }
+          } else {
+            this.sessionManager.sendToActiveSession(text);
+          }
+          await this.replyWithThreadSupport(ctx, `Sent: "${text}"`, incomingThreadId);
         } catch (error) {
           const message = error instanceof Error ? error.message : 'No active session';
-          await ctx.reply(`Error: ${message}. Use /new to create a session.`);
+          await this.replyWithThreadSupport(ctx, `Error: ${message}. Use /new to create a session.`, incomingThreadId);
         }
         return;
       }
@@ -1508,8 +2272,9 @@ export class TelegramBot {
 
       // Input length validation - security hardening (REM-005)
       if (text.length > TelegramBot.MAX_MESSAGE_LENGTH) {
-        await ctx.reply(
-          `Message too long (${text.length} chars). Maximum allowed: ${TelegramBot.MAX_MESSAGE_LENGTH} characters.`
+        await this.replyWithThreadSupport(ctx,
+          `Message too long (${text.length} chars). Maximum allowed: ${TelegramBot.MAX_MESSAGE_LENGTH} characters.`,
+          incomingThreadId
         );
         return;
       }
@@ -1531,18 +2296,86 @@ export class TelegramBot {
           this.pendingQuestions.delete(chatId);
         }
 
-        // Send to Claude session
-        this.sessionManager.sendToActiveSession(text);
+        // Note: Session-thread binding only happens explicitly via /linksession or /new in a thread
+        // Regular messages do NOT automatically bind sessions to threads
+
+        console.log(`[Message] INCOMING: chatId=${chatId}, threadId=${incomingThreadId}, text="${text.substring(0, 50)}..."`);
+        console.log(`[Message] threadedModeConfig.enabled=${this.threadedModeConfig.enabled}, threadManager=${!!this.threadManager}`);
+
+        // Use per-thread session resolution when threaded mode is enabled
+        if (this.threadedModeConfig.enabled && this.threadManager && incomingThreadId !== undefined) {
+          console.log(`[Message] Looking up session for thread ${incomingThreadId} in chat ${chatId}`);
+          // Use ThreadManager as the canonical source for session-thread mappings
+          const boundSessionId = this.threadManager.getSessionForThread(chatId, incomingThreadId);
+          console.log(`[Message] Lookup result: boundSessionId=${boundSessionId || 'NOT FOUND'}`)
+
+          if (boundSessionId) {
+            // Found a session bound to this thread - send to it directly
+            const session = this.sessionManager.getSession(boundSessionId);
+            if (session) {
+              console.log(`[Message] Thread ${incomingThreadId} -> Session ${boundSessionId.substring(0, 8)}...`);
+              this.sessionManager.sendToSession(boundSessionId, text);
+            } else {
+              // Session was deleted but mapping remains - clean up
+              this.threadManager.clearSessionForThread(chatId, incomingThreadId);
+              await this.replyWithThreadSupport(ctx,
+                'The session for this thread no longer exists. Use /new to create one.',
+                incomingThreadId
+              );
+              return;
+            }
+          } else {
+            // No session bound to this thread - auto-create a new session for this thread
+            console.log(`[Message] Thread ${incomingThreadId} has no binding, auto-creating new session...`);
+
+            try {
+              // Create a new session for this thread
+              const sessionName = `thread-${incomingThreadId}-${Date.now()}`;
+              const newSession = await this.sessionManager.createSession(sessionName);
+
+              // Subscribe to the new session's output
+              this.subscribeToSessionOutput(newSession.id);
+
+              // Bind the new session to this thread
+              this.threadManager.setSessionForThread(chatId, incomingThreadId, newSession.id);
+              console.log(`[Message] Auto-created session ${newSession.id.substring(0, 8)}... and bound to thread ${incomingThreadId}`);
+
+              // Send the message to the new session
+              this.sessionManager.sendToSession(newSession.id, text);
+
+              // Notify the user
+              await this.replyWithThreadSupport(ctx,
+                `Auto-created new session for this thread.\n` +
+                `Session: ${newSession.name}\n` +
+                `ID: \`${newSession.id.substring(0, 8)}...\``,
+                incomingThreadId,
+                'Markdown'
+              );
+            } catch (error) {
+              const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+              console.error(`[Message] Failed to auto-create session: ${errorMsg}`);
+              await this.replyWithThreadSupport(ctx,
+                `Failed to create session for this thread: ${errorMsg}\n` +
+                'Use /new to create a session manually.',
+                incomingThreadId
+              );
+              return;
+            }
+          }
+        } else {
+          // Fall back to global session behavior
+          this.sessionManager.sendToActiveSession(text);
+        }
 
         // Provide appropriate feedback based on what was sent
         if (text.startsWith('/babysitter:call')) {
-          await ctx.reply('🤹 Sent to the Babysitter.');
+          await this.replyWithThreadSupport(ctx, 'Sent to the Babysitter.', incomingThreadId);
         } else {
-          await ctx.reply('Sent to Claude session.');
+          await this.replyWithThreadSupport(ctx, 'Sent to Claude session.', incomingThreadId);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'No active session';
-        await ctx.reply(`Error: ${message}. Use /new to create a session.`);
+        await this.replyWithThreadSupport(ctx, `Error: ${message}. Use /new to create a session.`, incomingThreadId);
       }
     });
 
@@ -1799,18 +2632,25 @@ export class TelegramBot {
           this.pendingCostCallback = null;
         }
 
+        // Track which session is producing this output (for correct thread routing)
+        // This must be set BEFORE parsing so forwardTextToUsers knows the source session
+        this.currentOutputSessionId = sessionId;
         this.outputParser.parseStreamOutput(data + '\n');
       });
       this.outputUnsubscribers.set(sessionId, unsubscribe);
 
       // Subscribe to error events
       const errorUnsubscribe = this.sessionManager.onSessionError(sessionId, (error: Error) => {
+        // Track which session produced this error for correct thread routing
+        this.currentOutputSessionId = sessionId;
         this.forwardErrorToUsers(error.message);
       });
       this.errorUnsubscribers.set(sessionId, errorUnsubscribe);
 
       // Subscribe to close events with auto-reconnect notification
       const closeUnsubscribe = this.sessionManager.onSessionClose(sessionId, (code: number | null) => {
+        // Track which session closed for correct thread routing
+        this.currentOutputSessionId = sessionId;
         if (code !== 0 && code !== null) {
           this.forwardErrorToUsers(`Session crashed (exit code: ${code}) - use /new to restart`);
           // Auto-reconnect notification: inform user about the crash
@@ -1896,17 +2736,61 @@ export class TelegramBot {
       closeUnsubscribe();
       this.closeUnsubscribers.delete(sessionId);
     }
+
+    // Clear session-to-thread mapping when session is unsubscribed
+    // Use ThreadManager for cleanup if available
+    if (this.threadManager) {
+      this.threadManager.unmapSession(sessionId);
+    }
   }
 
   /**
    * Forward text output to all connected users with message batching
    * If activeChat is set, prioritize sending to that chat (group support)
+   * Uses session thread mapping to route output to the correct thread
    */
   private async forwardTextToUsers(text: string): Promise<void> {
 
     // Skip empty or very short messages
     if (!text || text.trim().length === 0) {
       return;
+    }
+
+    // Get thread context from the session that PRODUCED this output (not the global active session)
+    // This is critical for correct routing when multiple sessions are active
+    let sessionThreadId: number | undefined;
+    let sessionChatId: number | string | undefined;
+    const outputSessionId = this.currentOutputSessionId;
+    const outputSession = outputSessionId ? this.sessionManager.getSession(outputSessionId) : null;
+
+    console.log(`[ForwardText] OUTPUT ROUTING: currentOutputSessionId=${outputSessionId?.substring(0, 8) || 'null'}, text="${text.substring(0, 50)}..."`);
+    console.log(`[ForwardText] Global active session: ${this.sessionManager.getActiveSession()?.id.substring(0, 8) || 'none'}`);
+
+    if (outputSession && outputSessionId) {
+      console.log(`[ForwardText] Looking up thread for output session ${outputSessionId.substring(0, 8)}...`);
+      const sessionThread = this.threadManager?.getThreadForSession(outputSessionId);
+      if (sessionThread) {
+        sessionThreadId = sessionThread.threadId;
+        sessionChatId = sessionThread.chatId;
+        console.log(`[ForwardText] FOUND: Output session ${outputSessionId.substring(0, 8)}... -> thread ${sessionThreadId} in chat ${sessionChatId}`);
+      } else {
+        console.log(`[ForwardText] NOT FOUND: Output session ${outputSessionId.substring(0, 8)}... has no thread binding`);
+      }
+    } else {
+      // Fallback to global active session if no output session is tracked
+      const activeSession = this.sessionManager.getActiveSession();
+      if (activeSession) {
+        const sessionThread = this.threadManager?.getThreadForSession(activeSession.id);
+        if (sessionThread) {
+          sessionThreadId = sessionThread.threadId;
+          sessionChatId = sessionThread.chatId;
+          console.log(`[ForwardText] Fallback to active session ${activeSession.id.substring(0, 8)}... bound to thread ${sessionThreadId}`);
+        } else {
+          console.log(`[ForwardText] Active session ${activeSession.id.substring(0, 8)}... has no thread binding`);
+        }
+      } else {
+        console.log(`[ForwardText] No session for text forwarding`);
+      }
     }
 
     // Build list of chats to send to
@@ -1921,6 +2805,8 @@ export class TelegramBot {
     for (const [_userId, chatId] of this.userChatIds.entries()) {
       chatsToNotify.add(chatId);
     }
+
+    console.log(`[ForwardText] Will notify ${chatsToNotify.size} chat(s): ${Array.from(chatsToNotify).join(', ')}`);
 
     for (const chatId of chatsToNotify) {
       try {
@@ -1937,61 +2823,94 @@ export class TelegramBot {
           // Check verbosity - minimal level skips text output
           const verbosity = this.userVerbosityLevel.get(userId) ?? this.defaultVerbosity;
           if (verbosity === 'minimal') {
+            console.log(`[ForwardText] Skipping chat ${chatId} (user ${userId} has minimal verbosity)`);
             continue;
           }
 
           // Check notification preferences
           const prefs = this.userNotificationPrefs.get(userId) ?? this.defaultNotificationPrefs;
           if (!prefs.completion) {
+            console.log(`[ForwardText] Skipping chat ${chatId} (user ${userId} has completion notifications disabled)`);
             continue;
           }
         }
 
-        // Use message batching to reduce message spam
-        this.batchMessage(chatId, text);
+        // Determine thread ID: prefer session thread (for matching chat), then user preference
+        let threadId: number | undefined;
+        if (sessionThreadId !== undefined && sessionChatId === chatId) {
+          threadId = sessionThreadId;
+          console.log(`[ForwardText] Using session thread binding: threadId=${threadId} for chatId=${chatId}`);
+        } else if (userId && this.isThreadedModeEnabledForUser(userId)) {
+          threadId = this.getUserThreadId(chatId, userId);
+          if (threadId !== undefined) {
+            console.log(`[ForwardText] Using user thread preference: threadId=${threadId} for chatId=${chatId}, userId=${userId}`);
+          }
+        }
+
+        if (threadId === undefined) {
+          console.log(`[ForwardText] No thread binding, routing to main chat: chatId=${chatId}`);
+        }
+
+        // Use message batching to reduce message spam (with thread support)
+        this.batchMessage(chatId, text, userId, threadId);
       } catch (error) {
-        console.error(`Failed to queue text for chat ${chatId}:`, error);
+        console.error(`[ForwardText] Failed to queue text for chat ${chatId}:`, error);
       }
     }
   }
 
   /**
-   * Add message to batch buffer and schedule flush
+   * Add message to batch buffer and schedule flush (with thread support)
+   * @param chatId - The chat ID to send to
+   * @param text - The message text
+   * @param userId - Optional user ID for thread context lookup
+   * @param threadId - Optional explicit thread ID override
    */
-  private batchMessage(chatId: number, text: string): void {
-    // Get or create buffer for this chat
-    if (!this.messageBatchBuffer.has(chatId)) {
-      this.messageBatchBuffer.set(chatId, []);
+  private batchMessage(chatId: number, text: string, userId?: number, threadId?: number): void {
+    // Create a batch key that includes thread context
+    const batchKey = threadId !== undefined ? `${chatId}:${threadId}` : `${chatId}`;
+
+    console.log(`[BatchMessage] Adding message to batch: chatId=${chatId}, threadId=${threadId}, batchKey=${batchKey}`);
+
+    // Get or create buffer for this chat/thread combination
+    if (!this.messageBatchBuffer.has(batchKey)) {
+      this.messageBatchBuffer.set(batchKey, { messages: [], userId, threadId });
+      console.log(`[BatchMessage] Created new batch buffer for key=${batchKey}`);
     }
-    const buffer = this.messageBatchBuffer.get(chatId)!;
-    buffer.push(text);
+    const batchContext = this.messageBatchBuffer.get(batchKey)!;
+    batchContext.messages.push(text);
 
     // Clear existing timer if any
-    const existingTimer = this.messageBatchTimer.get(chatId);
+    const existingTimer = this.messageBatchTimer.get(batchKey);
     if (existingTimer) {
       clearTimeout(existingTimer);
     }
 
     // Set timer to flush buffer
     const timer = setTimeout(() => {
-      this.flushMessageBatch(chatId);
+      this.flushMessageBatch(chatId, batchKey);
     }, TelegramBot.BATCH_DELAY_MS);
-    this.messageBatchTimer.set(chatId, timer);
+    this.messageBatchTimer.set(batchKey, timer);
   }
 
   /**
-   * Flush batched messages for a chat
+   * Flush batched messages for a chat (with thread support)
+   * @param chatId - The chat ID
+   * @param batchKey - The batch key (chatId or chatId:threadId)
    */
-  private async flushMessageBatch(chatId: number): Promise<void> {
-    const buffer = this.messageBatchBuffer.get(chatId);
-    if (!buffer || buffer.length === 0) return;
+  private async flushMessageBatch(chatId: number, batchKey?: string): Promise<void> {
+    const effectiveKey = batchKey ?? `${chatId}`;
+    const batchContext = this.messageBatchBuffer.get(effectiveKey);
+    if (!batchContext || batchContext.messages.length === 0) return;
+
+    console.log(`[FlushBatch] Flushing batch: chatId=${chatId}, batchKey=${effectiveKey}, threadId=${batchContext.threadId}, messageCount=${batchContext.messages.length}`);
 
     // Clear buffer and timer
-    this.messageBatchBuffer.delete(chatId);
-    this.messageBatchTimer.delete(chatId);
+    this.messageBatchBuffer.delete(effectiveKey);
+    this.messageBatchTimer.delete(effectiveKey);
 
     // Combine messages
-    const combined = buffer.join('\n');
+    const combined = batchContext.messages.join('\n');
 
     // Truncate if too long
     const maxLength = 4000;
@@ -2005,26 +2924,32 @@ export class TelegramBot {
     const timeSinceLast = now - lastTime;
 
     if (timeSinceLast < TelegramBot.RATE_LIMIT_MS) {
-      // Queue the message for later
-      this.queueMessage(chatId, truncatedText);
+      // Queue the message for later (with thread context)
+      console.log(`[FlushBatch] Rate limited, queueing message for chatId=${chatId}, threadId=${batchContext.threadId}`);
+      this.queueMessage(chatId, truncatedText, batchContext.userId, batchContext.threadId);
       return;
     }
 
-    // Send immediately
-    await this.sendMessageWithRateLimit(chatId, truncatedText);
+    // Send immediately (with thread context)
+    console.log(`[FlushBatch] Sending immediately to chatId=${chatId}, threadId=${batchContext.threadId}`);
+    await this.sendMessageWithRateLimit(chatId, truncatedText, batchContext.userId, batchContext.threadId);
   }
 
   /**
-   * Queue a message for later sending (when rate limited)
+   * Queue a message for later sending (when rate limited, with thread support)
+   * @param chatId - The chat ID
+   * @param message - The message text
+   * @param userId - Optional user ID for thread context
+   * @param threadId - Optional explicit thread ID
    */
-  private queueMessage(chatId: number, message: string): void {
+  private queueMessage(chatId: number, message: string, userId?: number, threadId?: number): void {
     // Don't queue if already at max
     if (this.messageQueue.length >= TelegramBot.MAX_QUEUE_SIZE) {
       console.warn(`Message queue full, dropping message for chat ${chatId}`);
       return;
     }
 
-    this.messageQueue.push({ chatId, message, timestamp: Date.now() });
+    this.messageQueue.push({ chatId, message, timestamp: Date.now(), userId, threadId });
 
     // Start processing queue if not already
     if (!this.isProcessingQueue) {
@@ -2033,7 +2958,7 @@ export class TelegramBot {
   }
 
   /**
-   * Process queued messages respecting rate limits
+   * Process queued messages respecting rate limits (with thread support)
    */
   private async processMessageQueue(): Promise<void> {
     if (this.isProcessingQueue || this.messageQueue.length === 0) return;
@@ -2052,21 +2977,58 @@ export class TelegramBot {
         await new Promise(resolve => setTimeout(resolve, waitTime));
       }
 
-      await this.sendMessageWithRateLimit(item.chatId, item.message);
+      await this.sendMessageWithRateLimit(item.chatId, item.message, item.userId, item.threadId);
     }
 
     this.isProcessingQueue = false;
   }
 
   /**
-   * Send message and track rate limit
+   * Send message and track rate limit (supports threaded mode)
+   * @param chatId - The chat ID
+   * @param text - The message text
+   * @param userId - Optional user ID for thread context lookup
+   * @param explicitThreadId - Optional explicit thread ID (takes precedence over user preference)
    */
-  private async sendMessageWithRateLimit(chatId: number, text: string): Promise<void> {
+  private async sendMessageWithRateLimit(chatId: number, text: string, userId?: number, explicitThreadId?: number): Promise<void> {
     try {
-      await this.bot.telegram.sendMessage(chatId, text);
+      const options: { message_thread_id?: number } = {};
+
+      // Priority 1: Use explicit thread ID if provided
+      if (explicitThreadId !== undefined) {
+        options.message_thread_id = explicitThreadId;
+        console.log(`[Routing] Using explicit threadId=${explicitThreadId} for chatId=${chatId}`);
+      } else {
+        // Priority 2: Check for session-based thread mapping (via ThreadManager)
+        const activeSession = this.sessionManager.getActiveSession();
+        if (activeSession) {
+          const sessionThread = this.threadManager?.getThreadForSession(activeSession.id);
+          if (sessionThread && sessionThread.chatId === chatId) {
+            options.message_thread_id = sessionThread.threadId;
+            console.log(`[Routing] Using session thread binding: sessionId=${activeSession.id}, threadId=${sessionThread.threadId}, chatId=${chatId}`);
+          } else if (sessionThread) {
+            console.log(`[Routing] Session thread exists but chatId mismatch: expected=${sessionThread.chatId}, actual=${chatId}`);
+          }
+        }
+
+        // Priority 3: Fall back to user preference for threaded mode
+        if (options.message_thread_id === undefined && userId && this.isThreadedModeEnabledForUser(userId)) {
+          const threadId = this.getUserThreadId(chatId, userId);
+          if (threadId !== undefined) {
+            options.message_thread_id = threadId;
+            console.log(`[Routing] Using user threaded mode preference: userId=${userId}, threadId=${threadId}, chatId=${chatId}`);
+          }
+        }
+      }
+
+      if (options.message_thread_id === undefined) {
+        console.log(`[Routing] No thread binding found, sending to main chat: chatId=${chatId}`);
+      }
+
+      await this.bot.telegram.sendMessage(chatId, text, options);
       this.lastMessageTime.set(chatId, Date.now());
     } catch (error) {
-      console.error(`Failed to send message to chat ${chatId}:`, error);
+      console.error(`[Routing] Failed to send message to chat ${chatId}:`, error);
     }
   }
 
@@ -2145,10 +3107,28 @@ export class TelegramBot {
 
   /**
    * Forward a question to all connected users (including active group chat)
+   * Routes to correct thread if session is bound to a thread
    */
   private async forwardQuestionToUsers(question: ParsedQuestion): Promise<void> {
     console.log(`[Question] Detected question: "${question.question.substring(0, 50)}..."`);
     console.log(`[Question] Connected users: ${this.userChatIds.size}, Active chat: ${this.activeChat}`);
+
+    // Get thread context from active session for routing (via ThreadManager)
+    let sessionThreadId: number | undefined;
+    let sessionChatId: number | string | undefined;
+    const activeSession = this.sessionManager.getActiveSession();
+    if (activeSession) {
+      const sessionThread = this.threadManager?.getThreadForSession(activeSession.id);
+      if (sessionThread) {
+        sessionThreadId = sessionThread.threadId;
+        sessionChatId = sessionThread.chatId;
+        console.log(`[Question] Active session ${activeSession.id} bound to thread ${sessionThreadId} in chat ${sessionChatId}`);
+      } else {
+        console.log(`[Question] Active session ${activeSession.id} has no thread binding`);
+      }
+    } else {
+      console.log(`[Question] No active session`);
+    }
 
     // Build list of chats to send to
     const chatsToNotify = new Set<number>();
@@ -2172,17 +3152,44 @@ export class TelegramBot {
 
     for (const chatId of chatsToNotify) {
       try {
-        console.log(`[Question] Sending to chat ${chatId}`);
+        // Determine thread ID: use session thread binding if chat matches
+        let threadId: number | undefined;
+        if (sessionThreadId !== undefined && sessionChatId === chatId) {
+          threadId = sessionThreadId;
+          console.log(`[Question] Routing to thread ${threadId} for chat ${chatId} (session binding)`);
+        } else {
+          // Fall back to user thread preference
+          for (const [uid, cid] of this.userChatIds.entries()) {
+            if (cid === chatId && this.isThreadedModeEnabledForUser(uid)) {
+              threadId = this.getUserThreadId(chatId, uid);
+              if (threadId !== undefined) {
+                console.log(`[Question] Routing to thread ${threadId} for chat ${chatId} (user preference)`);
+              }
+              break;
+            }
+          }
+        }
+
+        console.log(`[Question] Sending to chat ${chatId}, threadId=${threadId}`);
         // Store pending question for this chat
         this.pendingQuestions.set(chatId, question);
 
-        await this.bot.telegram.sendMessage(chatId, formatted.text, {
+        const sendOptions: {
+          parse_mode?: 'Markdown' | 'HTML';
+          reply_markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
+          message_thread_id?: number;
+        } = {
           parse_mode: formatted.parseMode,
           reply_markup: formatted.replyMarkup,
-        });
-        console.log(`[Question] Successfully sent to chat ${chatId}`);
+        };
+        if (threadId !== undefined) {
+          sendOptions.message_thread_id = threadId;
+        }
+
+        await this.bot.telegram.sendMessage(chatId, formatted.text, sendOptions);
+        console.log(`[Question] Successfully sent to chat ${chatId}, threadId=${threadId}`);
       } catch (error) {
-        console.error(`Failed to send question to chat ${chatId}:`, error);
+        console.error(`[Question] Failed to send question to chat ${chatId}:`, error);
       }
     }
   }
@@ -2256,4 +3263,210 @@ export class TelegramBot {
   isUserAuthorized(userId: number): boolean {
     return this.allowedUsers.has(userId);
   }
+
+  // ============================================================================
+  // Streaming Mode Helper Methods
+  // ============================================================================
+
+  /**
+   * Get the streaming mode for a user
+   * @param userId - The user ID
+   * @returns The streaming mode (defaults to config mode or 'off')
+   */
+  getUserStreamingMode(userId: number): StreamingMode {
+    return this.userStreamingMode.get(userId) ?? this.streamingConfig.mode;
+  }
+
+  /**
+   * Set the streaming mode for a user
+   * @param userId - The user ID
+   * @param mode - The streaming mode to set
+   */
+  setUserStreamingMode(userId: number, mode: StreamingMode): void {
+    this.userStreamingMode.set(userId, mode);
+  }
+
+  /**
+   * Check if streaming is enabled for a user
+   * @param userId - The user ID
+   * @returns true if streaming is enabled for this user
+   */
+  isStreamingEnabledForUser(userId: number): boolean {
+    if (!this.streamingService || !this.streamingConfig.enabled) {
+      return false;
+    }
+    const userMode = this.getUserStreamingMode(userId);
+    return userMode !== 'off';
+  }
+
+  /**
+   * Get the streaming service instance (for testing)
+   */
+  getStreamingService(): StreamingService | null {
+    return this.streamingService;
+  }
+
+  /**
+   * Get the draft handler instance (for testing)
+   */
+  getDraftHandler(): DraftMessageHandler | null {
+    return this.draftHandler;
+  }
+
+  // ============================================================================
+  // Threaded Mode Helper Methods
+  // ============================================================================
+
+  /**
+   * Get the thread ID for a chat/user combination
+   * @param chatId - The chat ID
+   * @param userId - Optional user ID for user-specific threads
+   * @returns The thread ID or undefined if not in threaded mode
+   */
+  getUserThreadId(chatId: number | string, userId?: number): number | undefined {
+    if (!this.threadManager || !this.threadedModeConfig.enabled) {
+      return undefined;
+    }
+    return this.threadManager.getThreadId(chatId, userId);
+  }
+
+  /**
+   * Set the thread for a user in a chat
+   * @param chatId - The chat ID
+   * @param userId - The user ID
+   * @param threadId - The thread ID to set
+   */
+  setUserThread(chatId: number | string, userId: number, threadId: number): void {
+    if (!this.threadManager) {
+      return;
+    }
+    this.threadManager.setThread(chatId, threadId, userId);
+  }
+
+  /**
+   * Check if threaded mode is enabled for a user
+   * @param userId - The user ID
+   * @returns true if threaded mode is enabled
+   */
+  isThreadedModeEnabledForUser(userId: number): boolean {
+    return this.userThreadedMode.get(userId) ?? this.threadedModeConfig.enabled;
+  }
+
+  /**
+   * Set threaded mode for a user
+   * @param userId - The user ID
+   * @param enabled - Whether to enable threaded mode
+   */
+  setUserThreadedMode(userId: number, enabled: boolean): void {
+    this.userThreadedMode.set(userId, enabled);
+  }
+
+  /**
+   * Extract SessionContext from a Telegraf context
+   * Used for thread-aware session resolution
+   * @param ctx - The Telegraf context
+   * @returns SessionContext with chatId, threadId, and userId
+   */
+  private getSessionContext(ctx: { chat?: { id: number }; message?: { message_thread_id?: number }; from?: { id: number } }): SessionContext {
+    return {
+      chatId: ctx.chat?.id ?? 0,
+      threadId: ctx.message?.message_thread_id,
+      userId: ctx.from?.id,
+    };
+  }
+
+  /**
+   * Get the thread manager instance (for testing)
+   */
+  getThreadManager(): ThreadManager | null {
+    return this.threadManager;
+  }
+
+  /**
+   * Get the topic handler instance (for testing)
+   */
+  getTopicHandler(): TopicHandler | null {
+    return this.topicHandler;
+  }
+
+  /**
+   * Extract thread ID from an incoming message
+   * @param message - The Telegram message object
+   * @returns The thread ID if present
+   */
+  private extractThreadId(message: { message_thread_id?: number }): number | undefined {
+    return message.message_thread_id;
+  }
+
+  /**
+   * Reply to a message with thread support
+   * @param ctx - The Telegraf context
+   * @param text - The message text
+   * @param threadId - Optional thread ID to reply in
+   * @param parseMode - Optional parse mode for formatting (Markdown or HTML)
+   */
+  private async replyWithThreadSupport(
+    ctx: { reply: (text: string, extra?: { message_thread_id?: number; parse_mode?: 'Markdown' | 'HTML' }) => Promise<unknown> },
+    text: string,
+    threadId?: number,
+    parseMode?: 'Markdown' | 'HTML'
+  ): Promise<void> {
+    const options: { message_thread_id?: number; parse_mode?: 'Markdown' | 'HTML' } = {};
+    if (threadId !== undefined) {
+      options.message_thread_id = threadId;
+    }
+    if (parseMode) {
+      options.parse_mode = parseMode;
+    }
+
+    console.log(`[Threads] replyWithThreadSupport called: threadId=${threadId}, parseMode=${parseMode}`);
+
+    try {
+      await ctx.reply(text, options);
+      console.log(`[Threads] Successfully replied with threadId=${threadId}`);
+    } catch (error) {
+      // Log the actual error message for debugging
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[Threads] Failed to reply with thread support (threadId=${threadId}):`, errorMessage);
+
+      // Only fall back to non-threaded reply if error indicates thread doesn't exist
+      // Common Telegram API errors for invalid thread: "message thread not found", "TOPIC_CLOSED", "TOPIC_DELETED"
+      const isThreadError = errorMessage.toLowerCase().includes('thread') ||
+                           errorMessage.toLowerCase().includes('topic') ||
+                           errorMessage.includes('MESSAGE_THREAD_INVALID');
+
+      if (isThreadError && threadId !== undefined) {
+        console.log(`[Threads] Thread error detected, falling back to non-threaded reply`);
+        try {
+          await ctx.reply(text, parseMode ? { parse_mode: parseMode } : undefined);
+          console.log(`[Threads] Fallback reply succeeded`);
+        } catch (fallbackError) {
+          const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+          console.error(`[Threads] Fallback reply also failed:`, fallbackMessage);
+        }
+      } else {
+        // Non-thread related error - don't silently swallow it, try fallback but log prominently
+        console.error(`[Threads] NON-THREAD ERROR - this may indicate a bug:`, errorMessage);
+        try {
+          await ctx.reply(text, parseMode ? { parse_mode: parseMode } : undefined);
+        } catch (fallbackError) {
+          const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+          console.error(`[Threads] Fallback reply also failed:`, fallbackMessage);
+        }
+      }
+    }
+  }
+
+  // ============================================================================
+  // REMOVED DEPRECATED METHODS (Consolidated into ThreadManager)
+  // ============================================================================
+  // The following methods have been removed as session-to-thread mapping
+  // is now handled exclusively by ThreadManager:
+  //
+  // - mapSessionToThread(sessionId, chatId, threadId): Use threadManager.setSessionForThread()
+  // - getSessionThreadMapping(sessionId): Use threadManager.getThreadForSession()
+  // - clearSessionThreadMapping(sessionId): Use threadManager.unmapSession()
+  //
+  // The private sessionThreadMapping Map has also been removed.
+  // ============================================================================
 }
