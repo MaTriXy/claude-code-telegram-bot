@@ -363,12 +363,38 @@ This sends a hard kill signal to the Claude process. The session remains active,
 
 The bot supports being added to Telegram groups for team collaboration:
 
-**Adding to a Group:**
-1. Add the bot to your Telegram group
-2. The bot will only respond to:
-   - Direct mentions: `@YourBotName help me with this code`
-   - Commands: `/new`, `/status`, etc.
-   - Replies to the bot's messages
+**Step 1: Configure Bot Privacy with @BotFather**
+
+Before adding the bot to a group, you need to disable Privacy Mode so the bot can read messages:
+
+1. Open [@BotFather](https://t.me/BotFather) in Telegram
+2. Send `/mybots` and select your bot
+3. Go to **Bot Settings** → **Group Privacy**
+4. Click **Turn off** (should show "Privacy mode is disabled")
+
+> **Why?** By default, Telegram bots in groups can only see commands (`/command`) and direct replies. Disabling privacy mode allows the bot to see `@mentions` too.
+
+**Step 2: Add Bot to Group**
+
+1. Open your Telegram group
+2. Go to group settings → Add Members
+3. Search for your bot by username and add it
+4. (Optional) Make the bot an admin if you want it to pin messages or manage the group
+
+**Step 3: Grant Bot Permissions (if admin)**
+
+If you make the bot an admin, ensure these permissions are enabled:
+- ✅ Send Messages
+- ✅ Send Media (for file responses)
+- ❌ Other admin permissions are not needed
+
+**How the Bot Responds in Groups:**
+
+The bot will only respond to:
+- Direct mentions: `@YourBotName help me with this code`
+- Commands: `/new`, `/status`, etc.
+- Replies to the bot's messages
+- Follow-up messages when awaiting custom input (e.g., after clicking "Other")
 
 **How it works in groups:**
 - The bot ignores regular group chat messages (no spam!)
@@ -390,6 +416,15 @@ Bot: Sent to Claude session.
 **Group + Private Chat:**
 - You can use the bot in private chat AND groups simultaneously
 - All authorized users see Claude's responses wherever they're interacting
+
+**Troubleshooting Group Issues:**
+
+| Problem | Solution |
+|---------|----------|
+| Bot doesn't respond to @mentions | Disable Privacy Mode in @BotFather |
+| Bot can't send messages | Check bot has "Send Messages" permission |
+| Commands work but @mentions don't | Privacy Mode is still enabled |
+| "Unauthorized" errors | Add user's ID to `ALLOWED_USER_IDS` |
 
 ### Using Voice Messages
 
