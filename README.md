@@ -8,6 +8,10 @@
 
 A Telegram bot that bridges your mobile device with Anthropic's Claude Code CLI, enabling remote operation from anywhere. Create sessions, manage multiple projects, and interact with Claude's agentic coding capabilities directly through Telegram.
 
+## Demo
+
+https://github.com/user-attachments/assets/a8c14166-13f6-455b-b38a-aaa5ea499f80
+
 ## Features
 
 ### Core Features

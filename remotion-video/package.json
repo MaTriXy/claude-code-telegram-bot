@@ -1,0 +1,25 @@
+{
+  "name": "remotion-video",
+  "version": "1.0.0",
+  "description": "Claude Code Telegram Bot Explainer Video",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "remotion studio",
+    "build": "remotion render ClaudeCodeTelegramBot out/video.mp4",
+    "preview": "remotion preview",
+    "upgrade": "remotion upgrade"
+  },
+  "keywords": ["remotion", "video", "explainer", "claude", "telegram"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@remotion/cli": "^4.0.414",
+    "@remotion/player": "^4.0.414",
+    "@types/react": "^19.2.10",
+    "@types/react-dom": "^19.2.3",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "remotion": "^4.0.414",
+    "typescript": "^5.9.3"
+  }
+}

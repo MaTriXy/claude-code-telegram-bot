@@ -315,6 +315,22 @@ export class SessionManager {
   }
 
   /**
+   * Kill a specific session's Claude process by session ID (hard stop)
+   * The session remains but the current process is terminated
+   * @param sessionId The session ID whose process should be killed
+   */
+  killSessionProcess(sessionId: string): void {
+    const session = this.getInternalSession(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    session.process.kill();
+    session.status = 'idle';
+    session.lastActivity = new Date();
+  }
+
+  /**
    * Write a response to the active session's stdin
    * Used for answering AskUserQuestion prompts
    */

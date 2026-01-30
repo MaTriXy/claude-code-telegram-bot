@@ -27,6 +27,7 @@ import { ClaudeSessionScanner, VoiceHandler, FileHandler } from '../utils/index.
 import { NotificationManager } from '../notifications/index.js';
 import { StreamingService, DraftMessageHandler } from '../streaming/index.js';
 import { ThreadManager, TopicHandler } from '../threaded/index.js';
+import { CommandRegistrationService } from './commands/index.js';
 
 type TextContext = Context<Update.MessageUpdate<Message.TextMessage>>;
 type CallbackContext = Context<Update.CallbackQueryUpdate>;
@@ -132,6 +133,9 @@ export class TelegramBot {
   // This is set before parsing output and used in forwardTextToUsers
   private currentOutputSessionId: string | null = null;
 
+  // Command registration service for Telegram command menus
+  private commandRegistrationService: CommandRegistrationService | null = null;
+
   constructor(config: TelegramBotConfig | ExtendedTelegramBotConfig | StreamingTelegramBotConfig) {
     this.bot = new Telegraf(config.token);
     this.sessionManager = new SessionManager(config.sessionManagerConfig);
@@ -197,6 +201,9 @@ export class TelegramBot {
       this.topicHandler = new TopicHandler(config.token);
       this.setupThreadEventHandlers();
     }
+
+    // Initialize command registration service
+    this.commandRegistrationService = new CommandRegistrationService(this.bot);
 
     this.setupMiddleware();
     this.setupCommands();
@@ -328,7 +335,7 @@ export class TelegramBot {
           '/switch <id> - Switch to a different session\n' +
           '/close <id> - Close and terminate a session\n' +
           '/status - Show current session details\n' +
-          '/cd <path> - Change working directory\n\n' +
+          '/cd <path> - Change working directory (non-threaded mode only)\n\n' +
           'Control:\n' +
           '/abort - Abort current operation (Ctrl+C)\n' +
           '/escape - Send ESC to interrupt and allow new prompt\n' +
@@ -349,13 +356,14 @@ export class TelegramBot {
           '/upload [on|off] - Toggle file upload\n' +
           '/verbosity [level] - Set output verbosity (minimal|normal|verbose)\n' +
           '/notify [type] [on|off] - Configure notifications\n\n' +
-          'Threaded Mode:\n' +
+          'Threaded Mode (each thread has isolated sessions):\n' +
           '/threads [on|off] - Toggle threaded mode\n' +
           '/topic <create|list|use|check> - Manage forum topics\n' +
           '/threadsession - Show session bound to current thread\n' +
           '/threadsessions - List all sessions and their thread bindings\n' +
           '/linksession <id> - Link a session to current thread\n' +
           '/unlinksession - Unlink session from current thread\n\n' +
+          'Note: In threaded mode, use /new <name> <dir> to set working directory.\n' +
           'When Claude asks questions, use the inline buttons or type a custom response.\n' +
           'You can send voice messages and upload files when enabled.\n\n' +
           '═══════════════════════════════\n' +
@@ -503,9 +511,26 @@ export class TelegramBot {
       }
     });
 
-    // /cd - Change directory for current session
+    // /cd - Change directory for current session (disabled in threaded mode)
     this.bot.command('cd', async (ctx) => {
       try {
+        const userId = ctx.from?.id;
+        const messageThreadId = this.extractThreadId(ctx.message);
+
+        // Check if threaded mode is enabled - /cd is not allowed in threaded mode
+        // because each thread has its own isolated session
+        if (this.threadedModeConfig.enabled && this.threadManager) {
+          await this.replyWithThreadSupport(ctx,
+            '⚠️ The /cd command is not available in threaded mode.\n\n' +
+            'In threaded mode, each thread has its own isolated session.\n' +
+            'To create a session with a specific working directory:\n\n' +
+            '  /new <name> <directory>\n\n' +
+            'Example: /new myproject C:\\work\\myproject',
+            messageThreadId
+          );
+          return;
+        }
+
         const newDir = ctx.message.text.split(' ').slice(1).join(' ');
         if (!newDir) {
           await ctx.reply('Usage: /cd <path>');
@@ -632,63 +657,141 @@ export class TelegramBot {
 
     // /status - Current session status
     this.bot.command('status', async (ctx) => {
-      const session = this.sessionManager.getActiveSession();
+      const chatId = ctx.chat?.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      let session = null;
+      let sessionSource = 'global';
+
+      // Check for thread-bound session first if threadManager exists
+      if (this.threadManager && chatId && messageThreadId !== undefined) {
+        const threadSessionId = this.threadManager.getSessionForThread(chatId, messageThreadId);
+        if (threadSessionId) {
+          session = this.sessionManager.getSession(threadSessionId);
+          if (session) {
+            sessionSource = 'thread-bound';
+          }
+        }
+      }
+
+      // Fall back to global active session
       if (!session) {
-        await ctx.reply('No active session. Use /new to create one.');
+        session = this.sessionManager.getActiveSession();
+        sessionSource = 'global';
+      }
+
+      if (!session) {
+        await this.replyWithThreadSupport(ctx, 'No active session. Use /new to create one.', messageThreadId);
         return;
       }
 
-      await ctx.reply(
-        `Current Session:\n\n` +
+      const sessionTypeInfo = sessionSource === 'thread-bound'
+        ? `(Thread-bound to thread ${messageThreadId})`
+        : '(Global active session)';
+
+      await this.replyWithThreadSupport(ctx,
+        `Current Session ${sessionTypeInfo}:\n\n` +
           `ID: \`${session.id}\`\n` +
           `Name: ${session.name}\n` +
           `Status: ${session.status}\n` +
           `Directory: ${session.workingDir}\n` +
           `Created: ${session.createdAt.toISOString()}\n` +
           `Last Activity: ${session.lastActivity.toISOString()}`,
-        { parse_mode: 'Markdown' }
+        messageThreadId,
+        'Markdown'
       );
     });
 
     // /abort - Abort current operation (sends Ctrl+C equivalent)
     this.bot.command('abort', async (ctx) => {
       try {
-        // Send special abort signal or message
-        this.sessionManager.sendToActiveSession('\x03'); // Ctrl+C
-        await ctx.reply('Abort signal sent to active session.');
+        const chatId = ctx.chat.id;
+        const messageThreadId = this.extractThreadId(ctx.message);
+
+        // Resolve session based on thread context
+        const { session, sessionId, source } = this.resolveSessionForThread(chatId, messageThreadId);
+
+        if (!session || !sessionId) {
+          await this.replyWithThreadSupport(ctx,
+            'No active session. Use /new to create one.',
+            messageThreadId
+          );
+          return;
+        }
+
+        // Send Ctrl+C to the resolved session
+        this.sessionManager.sendToSession(sessionId, '\x03');
+        const sourceInfo = source === 'thread-bound' ? ' (thread-bound)' : '';
+        await this.replyWithThreadSupport(ctx,
+          `Abort signal sent to session${sourceInfo}.`,
+          messageThreadId
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : 'No active session';
-        await ctx.reply(`Error: ${message}`);
+        const messageThreadId = this.extractThreadId(ctx.message);
+        await this.replyWithThreadSupport(ctx, `Error: ${message}`, messageThreadId);
       }
     });
 
     // /kill - Force kill the current Claude process (hard stop)
     this.bot.command('kill', async (ctx) => {
       try {
-        const activeSession = this.sessionManager.getActiveSession();
-        if (!activeSession) {
-          await ctx.reply('No active session to kill.');
+        const chatId = ctx.chat.id;
+        const messageThreadId = this.extractThreadId(ctx.message);
+
+        // Resolve session based on thread context
+        const { session, sessionId, source } = this.resolveSessionForThread(chatId, messageThreadId);
+
+        if (!session || !sessionId) {
+          await this.replyWithThreadSupport(ctx,
+            'No active session to kill.',
+            messageThreadId
+          );
           return;
         }
 
         // Kill the process forcefully
-        this.sessionManager.killActiveProcess();
-        await ctx.reply('🔪 Killed! Claude/Babysitter process terminated.');
+        this.sessionManager.killSessionProcess(sessionId);
+        const sourceInfo = source === 'thread-bound' ? ' (thread-bound)' : '';
+        await this.replyWithThreadSupport(ctx,
+          `🔪 Killed! Claude/Babysitter process terminated${sourceInfo}.`,
+          messageThreadId
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to kill process';
-        await ctx.reply(`Error: ${message}`);
+        const messageThreadId = this.extractThreadId(ctx.message);
+        await this.replyWithThreadSupport(ctx, `Error: ${message}`, messageThreadId);
       }
     });
 
     // /escape - Send ESC key to abort current activity and allow new prompt
     this.bot.command('escape', async (ctx) => {
       try {
-        // Send ESC character (0x1B) to the session
-        this.sessionManager.sendToActiveSession('\x1B');
-        await ctx.reply('⎋ Escape sent. You can now send a new prompt.');
+        const chatId = ctx.chat.id;
+        const messageThreadId = this.extractThreadId(ctx.message);
+
+        // Resolve session based on thread context
+        const { session, sessionId, source } = this.resolveSessionForThread(chatId, messageThreadId);
+
+        if (!session || !sessionId) {
+          await this.replyWithThreadSupport(ctx,
+            'No active session. Use /new to create one.',
+            messageThreadId
+          );
+          return;
+        }
+
+        // Send ESC character (0x1B) to the resolved session
+        this.sessionManager.sendToSession(sessionId, '\x1B');
+        const sourceInfo = source === 'thread-bound' ? ' (thread-bound)' : '';
+        await this.replyWithThreadSupport(ctx,
+          `⎋ Escape sent${sourceInfo}. You can now send a new prompt.`,
+          messageThreadId
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : 'No active session';
-        await ctx.reply(`Error: ${message}`);
+        const messageThreadId = this.extractThreadId(ctx.message);
+        await this.replyWithThreadSupport(ctx, `Error: ${message}`, messageThreadId);
       }
     });
 
@@ -947,22 +1050,30 @@ export class TelegramBot {
 
     // /file - Request a file from working directory
     this.bot.command('file', async (ctx) => {
-      const session = this.sessionManager.getActiveSession();
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      // Resolve session based on thread context
+      const { session } = this.resolveSessionForThread(chatId, messageThreadId);
       if (!session) {
-        await ctx.reply('No active session. Use /new to create one.');
+        await this.replyWithThreadSupport(ctx,
+          'No active session. Use /new to create one.',
+          messageThreadId
+        );
         return;
       }
 
       const args = ctx.message.text.split(' ').slice(1);
       if (args.length === 0) {
-        await ctx.reply(
+        await this.replyWithThreadSupport(ctx,
           'Request a file from the session working directory.\n\n' +
           'Usage:\n' +
           '  /file <path> - Send as formatted text\n' +
           '  /file <path> --raw - Send as file attachment\n\n' +
           'Examples:\n' +
           '  /file src/index.ts\n' +
-          '  /file package.json --raw'
+          '  /file package.json --raw',
+          messageThreadId
         );
         return;
       }
@@ -1049,9 +1160,16 @@ export class TelegramBot {
 
     // /diff - Request git diff for a file or path
     this.bot.command('diff', async (ctx) => {
-      const session = this.sessionManager.getActiveSession();
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      // Resolve session based on thread context
+      const { session } = this.resolveSessionForThread(chatId, messageThreadId);
       if (!session) {
-        await ctx.reply('No active session. Use /new to create one.');
+        await this.replyWithThreadSupport(ctx,
+          'No active session. Use /new to create one.',
+          messageThreadId
+        );
         return;
       }
 
@@ -1163,20 +1281,35 @@ export class TelegramBot {
 
     // /pwd - Quick working directory check
     this.bot.command('pwd', async (ctx) => {
-      const session = this.sessionManager.getActiveSession();
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      // Resolve session based on thread context
+      const { session, source } = this.resolveSessionForThread(chatId, messageThreadId);
       if (!session) {
-        await ctx.reply('No active session. Use /new to create one.');
+        await this.replyWithThreadSupport(ctx,
+          'No active session. Use /new to create one.',
+          messageThreadId
+        );
         return;
       }
 
-      await ctx.reply(`📂 ${session.workingDir}`);
+      const sourceInfo = source === 'thread-bound' ? ' (thread-bound)' : '';
+      await this.replyWithThreadSupport(ctx, `📂 ${session.workingDir}${sourceInfo}`, messageThreadId);
     });
 
     // /git - Common git operations
     this.bot.command('git', async (ctx) => {
-      const session = this.sessionManager.getActiveSession();
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      // Resolve session based on thread context
+      const { session } = this.resolveSessionForThread(chatId, messageThreadId);
       if (!session) {
-        await ctx.reply('No active session. Use /new to create one.');
+        await this.replyWithThreadSupport(ctx,
+          'No active session. Use /new to create one.',
+          messageThreadId
+        );
         return;
       }
 
@@ -1251,9 +1384,16 @@ export class TelegramBot {
 
     // /tree - Directory tree view
     this.bot.command('tree', async (ctx) => {
-      const session = this.sessionManager.getActiveSession();
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      // Resolve session based on thread context
+      const { session } = this.resolveSessionForThread(chatId, messageThreadId);
       if (!session) {
-        await ctx.reply('No active session. Use /new to create one.');
+        await this.replyWithThreadSupport(ctx,
+          'No active session. Use /new to create one.',
+          messageThreadId
+        );
         return;
       }
 
@@ -1365,12 +1505,25 @@ export class TelegramBot {
       // Try to use as bookmark name
       const savedPrompt = bookmarks.get(subcommand);
       if (savedPrompt) {
+        const chatId = ctx.chat.id;
+        const messageThreadId = this.extractThreadId(ctx.message);
+
+        // Resolve session based on thread context
+        const { session, sessionId } = this.resolveSessionForThread(chatId, messageThreadId);
+        if (!session || !sessionId) {
+          await this.replyWithThreadSupport(ctx,
+            'No active session. Use /new to create one.',
+            messageThreadId
+          );
+          return;
+        }
+
         try {
-          this.sessionManager.sendToActiveSession(savedPrompt);
-          await ctx.reply(`📤 Sent bookmark "${subcommand}" to Claude.`);
+          this.sessionManager.sendToSession(sessionId, savedPrompt);
+          await this.replyWithThreadSupport(ctx, `📤 Sent bookmark "${subcommand}" to Claude.`, messageThreadId);
         } catch (error) {
           const message = error instanceof Error ? error.message : 'No active session';
-          await ctx.reply(`Error: ${message}. Use /new to create a session.`);
+          await this.replyWithThreadSupport(ctx, `Error: ${message}. Use /new to create a session.`, messageThreadId);
         }
       } else {
         await ctx.reply(`Bookmark "${subcommand}" not found. Use /bookmark list to see available bookmarks.`);
@@ -1379,9 +1532,16 @@ export class TelegramBot {
 
     // /context - Show conversation context size
     this.bot.command('context', async (ctx) => {
-      const session = this.sessionManager.getActiveSession();
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      // Resolve session based on thread context
+      const { session } = this.resolveSessionForThread(chatId, messageThreadId);
       if (!session) {
-        await ctx.reply('No active session. Use /new to create one.');
+        await this.replyWithThreadSupport(ctx,
+          'No active session. Use /new to create one.',
+          messageThreadId
+        );
         return;
       }
 
@@ -1407,22 +1567,29 @@ export class TelegramBot {
 
     // /cost - Send /cost to Claude and format results
     this.bot.command('cost', async (ctx) => {
-      const session = this.sessionManager.getActiveSession();
-      if (!session) {
-        await ctx.reply('No active session. Use /new to create one.');
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      // Resolve session based on thread context
+      const { session, sessionId } = this.resolveSessionForThread(chatId, messageThreadId);
+      if (!session || !sessionId) {
+        await this.replyWithThreadSupport(ctx,
+          'No active session. Use /new to create one.',
+          messageThreadId
+        );
         return;
       }
 
       try {
-        await ctx.reply('💰 Fetching cost information from Claude...');
+        await this.replyWithThreadSupport(ctx, '💰 Fetching cost information from Claude...', messageThreadId);
 
         // Set up a callback to capture the response
         this.pendingCostCallback = (response: string) => {
-          this.formatAndSendCostInfo(ctx.chat.id, response);
+          this.formatAndSendCostInfo(chatId, response, messageThreadId);
         };
 
-        // Send /cost to Claude
-        this.sessionManager.sendToActiveSession('/cost');
+        // Send /cost to Claude (use resolved session)
+        this.sessionManager.sendToSession(sessionId, '/cost');
 
         // Timeout after 10 seconds
         setTimeout(() => {
@@ -1439,9 +1606,16 @@ export class TelegramBot {
 
     // /babysit - Alias for /babysitter:call (forwards to Claude as skill)
     this.bot.command('babysit', async (ctx) => {
-      const session = this.sessionManager.getActiveSession();
-      if (!session) {
-        await ctx.reply('No active session. Use /new to create one.');
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
+      // Resolve session based on thread context
+      const { session, sessionId } = this.resolveSessionForThread(chatId, messageThreadId);
+      if (!session || !sessionId) {
+        await this.replyWithThreadSupport(ctx,
+          'No active session. Use /new to create one.',
+          messageThreadId
+        );
         return;
       }
 
@@ -1451,12 +1625,12 @@ export class TelegramBot {
 
         // Forward to Claude as /babysitter:call with the same arguments
         const fullCommand = args ? `/babysitter:call ${args}` : '/babysitter:call';
-        this.sessionManager.sendToActiveSession(fullCommand);
+        this.sessionManager.sendToSession(sessionId, fullCommand);
 
-        await ctx.reply('Sent to the Babysitter.');
+        await this.replyWithThreadSupport(ctx, 'Sent to the Babysitter.', messageThreadId);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to send to Babysitter';
-        await ctx.reply(`Error: ${message}`);
+        await this.replyWithThreadSupport(ctx, `Error: ${message}`, messageThreadId);
       }
     });
 
@@ -2001,11 +2175,10 @@ export class TelegramBot {
   /**
    * Format and send cost information to user
    */
-  private async formatAndSendCostInfo(chatId: number, response: string): Promise<void> {
+  private async formatAndSendCostInfo(chatId: number, response: string, threadId?: number): Promise<void> {
     try {
       // Parse the cost response from Claude
       // Typical format includes session cost, total cost, token usage
-      const lines = response.split('\n').filter(l => l.trim());
 
       let formatted = '💰 *Cost Summary*\n\n';
 
@@ -2033,10 +2206,18 @@ export class TelegramBot {
         formatted = '💰 Cost Information:\n\n' + response.slice(0, 2000);
       }
 
-      await this.bot.telegram.sendMessage(chatId, formatted, { parse_mode: 'Markdown' });
+      const options: { parse_mode: 'Markdown'; message_thread_id?: number } = { parse_mode: 'Markdown' };
+      if (threadId !== undefined) {
+        options.message_thread_id = threadId;
+      }
+      await this.bot.telegram.sendMessage(chatId, formatted, options);
     } catch (error) {
       // Fallback to plain text
-      await this.bot.telegram.sendMessage(chatId, `💰 Cost Information:\n\n${response.slice(0, 2000)}`);
+      const options: { message_thread_id?: number } = {};
+      if (threadId !== undefined) {
+        options.message_thread_id = threadId;
+      }
+      await this.bot.telegram.sendMessage(chatId, `💰 Cost Information:\n\n${response.slice(0, 2000)}`, options);
     }
   }
 
@@ -2075,10 +2256,22 @@ export class TelegramBot {
             this.waitingForUserResponse = false;
             console.log('[Answer] User responded, resuming message forwarding');
 
-            // Send the answer as a new message to Claude using --resume
-            // This continues the conversation with the user's answer
-            console.log(`[Answer] Sending answer as new message: "${selectedOption.label}"`);
-            this.sessionManager.sendToActiveSession(selectedOption.label);
+            // Get thread context from last known user thread
+            const userId = ctx.from?.id;
+            const threadKey = `${chatId}:${userId}`;
+            const threadId = this.userLastThreadId.get(threadKey);
+
+            // Resolve session based on thread context
+            const { session, sessionId } = this.resolveSessionForThread(chatId, threadId);
+
+            if (!session || !sessionId) {
+              await ctx.answerCbQuery('No active session');
+              return;
+            }
+
+            // Send the answer as a new message to Claude using the resolved session
+            console.log(`[Answer] Sending answer as new message: "${selectedOption.label}" (session: ${sessionId.substring(0, 8)}...)`);
+            this.sessionManager.sendToSession(sessionId, selectedOption.label);
 
             await ctx.answerCbQuery(`Selected: ${selectedOption.label}`);
             await ctx.editMessageText(
@@ -2384,21 +2577,25 @@ export class TelegramBot {
       const userId = ctx.from?.id;
       if (!userId) return;
 
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
       // Track which chat is actively communicating with the bot
-      this.activeChat = ctx.chat.id;
+      this.activeChat = chatId;
 
       // Check if voice is enabled for this user
       const voiceEnabled = this.userVoiceEnabled.get(userId) ?? this.voiceConfig.enabled;
       if (!voiceEnabled || !this.voiceHandler) {
-        await ctx.reply(
+        await this.replyWithThreadSupport(ctx,
           'Voice transcription is disabled.\n' +
-          'Use /voice on to enable it.'
+          'Use /voice on to enable it.',
+          messageThreadId
         );
         return;
       }
 
       try {
-        await ctx.reply('Transcribing voice message...');
+        await this.replyWithThreadSupport(ctx, 'Transcribing voice message...', messageThreadId);
 
         const voice = ctx.message.voice;
         const file = await ctx.telegram.getFile(voice.file_id);
@@ -2412,17 +2609,24 @@ export class TelegramBot {
         const transcribedText = await this.voiceHandler.transcribe(buffer, voice.file_id);
 
         if (!transcribedText || transcribedText.trim().length === 0) {
-          await ctx.reply('Could not transcribe voice message (no speech detected).');
+          await this.replyWithThreadSupport(ctx, 'Could not transcribe voice message (no speech detected).', messageThreadId);
           return;
         }
 
-        await ctx.reply(`Transcribed: "${transcribedText}"\n\nSending to Claude...`);
+        await this.replyWithThreadSupport(ctx, `Transcribed: "${transcribedText}"\n\nSending to Claude...`, messageThreadId);
+
+        // Resolve session based on thread context
+        const { session, sessionId } = this.resolveSessionForThread(chatId, messageThreadId);
+        if (!session || !sessionId) {
+          await this.replyWithThreadSupport(ctx, 'No active session. Use /new to create one.', messageThreadId);
+          return;
+        }
 
         // Send to Claude session
-        this.sessionManager.sendToActiveSession(transcribedText);
+        this.sessionManager.sendToSession(sessionId, transcribedText);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Transcription failed';
-        await ctx.reply(`Error: ${message}`);
+        await this.replyWithThreadSupport(ctx, `Error: ${message}`, messageThreadId);
       }
     });
 
@@ -2431,15 +2635,19 @@ export class TelegramBot {
       const userId = ctx.from?.id;
       if (!userId) return;
 
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
       // Track which chat is actively communicating with the bot
-      this.activeChat = ctx.chat.id;
+      this.activeChat = chatId;
 
       // Check if upload is enabled for this user
       const uploadEnabled = this.userUploadEnabled.get(userId) ?? this.fileUploadConfig.enabled;
       if (!uploadEnabled || !this.fileHandler) {
-        await ctx.reply(
+        await this.replyWithThreadSupport(ctx,
           'File upload is disabled.\n' +
-          'Use /upload on to enable it.'
+          'Use /upload on to enable it.',
+          messageThreadId
         );
         return;
       }
@@ -2453,11 +2661,11 @@ export class TelegramBot {
         // Validate file
         const validation = this.fileHandler.validateFile(fileName, mimeType, fileSize);
         if (!validation.valid) {
-          await ctx.reply(`Cannot process file: ${validation.reason}`);
+          await this.replyWithThreadSupport(ctx, `Cannot process file: ${validation.reason}`, messageThreadId);
           return;
         }
 
-        await ctx.reply(`Processing file: ${fileName}...`);
+        await this.replyWithThreadSupport(ctx, `Processing file: ${fileName}...`, messageThreadId);
 
         // Download the file
         const file = await ctx.telegram.getFile(doc.file_id);
@@ -2484,8 +2692,15 @@ export class TelegramBot {
           messageToSend = `[File uploaded: ${fileInfo.localPath}]\n\n${caption}`.trim();
         }
 
-        await ctx.reply(`Sending to Claude: ${fileName}`);
-        this.sessionManager.sendToActiveSession(messageToSend);
+        // Resolve session based on thread context
+        const { session, sessionId } = this.resolveSessionForThread(chatId, messageThreadId);
+        if (!session || !sessionId) {
+          await this.replyWithThreadSupport(ctx, 'No active session. Use /new to create one.', messageThreadId);
+          return;
+        }
+
+        await this.replyWithThreadSupport(ctx, `Sending to Claude: ${fileName}`, messageThreadId);
+        this.sessionManager.sendToSession(sessionId, messageToSend);
 
         // Clean up the file after a delay
         setTimeout(() => {
@@ -2493,7 +2708,7 @@ export class TelegramBot {
         }, 60000); // 1 minute
       } catch (error) {
         const message = error instanceof Error ? error.message : 'File processing failed';
-        await ctx.reply(`Error: ${message}`);
+        await this.replyWithThreadSupport(ctx, `Error: ${message}`, messageThreadId);
       }
     });
 
@@ -2502,15 +2717,19 @@ export class TelegramBot {
       const userId = ctx.from?.id;
       if (!userId) return;
 
+      const chatId = ctx.chat.id;
+      const messageThreadId = this.extractThreadId(ctx.message);
+
       // Track which chat is actively communicating with the bot
-      this.activeChat = ctx.chat.id;
+      this.activeChat = chatId;
 
       // Check if upload is enabled for this user
       const uploadEnabled = this.userUploadEnabled.get(userId) ?? this.fileUploadConfig.enabled;
       if (!uploadEnabled || !this.fileHandler) {
-        await ctx.reply(
+        await this.replyWithThreadSupport(ctx,
           'File upload is disabled.\n' +
-          'Use /upload on to enable it.'
+          'Use /upload on to enable it.',
+          messageThreadId
         );
         return;
       }
@@ -2520,7 +2739,7 @@ export class TelegramBot {
         const photos = ctx.message.photo;
         const largestPhoto = photos[photos.length - 1];
 
-        await ctx.reply('Processing image...');
+        await this.replyWithThreadSupport(ctx, 'Processing image...', messageThreadId);
 
         // Download the photo
         const file = await ctx.telegram.getFile(largestPhoto.file_id);
@@ -2540,8 +2759,15 @@ export class TelegramBot {
         const caption = ctx.message.caption || 'Please analyze this image.';
         const messageToSend = `[Image uploaded: ${fileInfo.localPath}]\n\n${caption}`;
 
-        await ctx.reply('Sending image to Claude...');
-        this.sessionManager.sendToActiveSession(messageToSend);
+        // Resolve session based on thread context
+        const { session, sessionId } = this.resolveSessionForThread(chatId, messageThreadId);
+        if (!session || !sessionId) {
+          await this.replyWithThreadSupport(ctx, 'No active session. Use /new to create one.', messageThreadId);
+          return;
+        }
+
+        await this.replyWithThreadSupport(ctx, 'Sending image to Claude...', messageThreadId);
+        this.sessionManager.sendToSession(sessionId, messageToSend);
 
         // Clean up the file after a delay
         setTimeout(() => {
@@ -2549,7 +2775,7 @@ export class TelegramBot {
         }, 60000); // 1 minute
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Image processing failed';
-        await ctx.reply(`Error: ${message}`);
+        await this.replyWithThreadSupport(ctx, `Error: ${message}`, messageThreadId);
       }
     });
   }
@@ -3211,6 +3437,11 @@ export class TelegramBot {
       console.log('Telegram bot started successfully');
     }
 
+    // Register commands with Telegram (for command menu suggestions)
+    if (this.commandRegistrationService) {
+      await this.commandRegistrationService.registerAllCommands();
+    }
+
     // Enable graceful stop
     process.once('SIGINT', () => this.stop());
     process.once('SIGTERM', () => this.stop());
@@ -3221,6 +3452,11 @@ export class TelegramBot {
    */
   async stop(): Promise<void> {
     console.log('Stopping Telegram bot...');
+
+    // Cleanup command registration service
+    if (this.commandRegistrationService) {
+      this.commandRegistrationService.cleanup();
+    }
 
     // Close all sessions
     const sessions = this.sessionManager.listSessions();
@@ -3359,6 +3595,45 @@ export class TelegramBot {
    */
   setUserThreadedMode(userId: number, enabled: boolean): void {
     this.userThreadedMode.set(userId, enabled);
+  }
+
+  /**
+   * Resolve the active session based on thread context.
+   * In threaded mode, returns the session bound to the current thread.
+   * Falls back to global active session if not in threaded mode or no thread binding exists.
+   *
+   * @param chatId - The chat ID
+   * @param threadId - Optional thread ID (from message_thread_id)
+   * @returns Object containing the session (or null), session ID, and source info
+   */
+  resolveSessionForThread(chatId: number, threadId?: number): {
+    session: Session | null;
+    sessionId: string | null;
+    source: 'thread-bound' | 'global' | 'none';
+  } {
+    // In threaded mode, try to get the session bound to this thread
+    if (this.threadedModeConfig.enabled && this.threadManager && threadId !== undefined) {
+      const boundSessionId = this.threadManager.getSessionForThread(chatId, threadId);
+      if (boundSessionId) {
+        const session = this.sessionManager.getSession(boundSessionId);
+        if (session) {
+          return { session, sessionId: boundSessionId, source: 'thread-bound' };
+        }
+        // Session was deleted but mapping remains - clean it up
+        this.threadManager.clearSessionForThread(chatId, threadId);
+      }
+      // In strict threaded mode, don't fall back to global session
+      // Each thread should have its own session
+      return { session: null, sessionId: null, source: 'none' };
+    }
+
+    // Fall back to global active session (non-threaded mode)
+    const globalSession = this.sessionManager.getActiveSession();
+    if (globalSession) {
+      return { session: globalSession, sessionId: globalSession.id, source: 'global' };
+    }
+
+    return { session: null, sessionId: null, source: 'none' };
   }
 
   /**
