@@ -126,6 +126,15 @@ export interface ParsedQuestion {
 }
 
 /**
+ * Pending question with associated session ID
+ * Used to track which session asked the question so answers route correctly
+ */
+export interface PendingQuestionWithSession {
+  question: ParsedQuestion;
+  sessionId: string;
+}
+
+/**
  * Claude Code output event types
  */
 export type ClaudeOutputType =

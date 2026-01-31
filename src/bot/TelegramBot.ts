@@ -8,6 +8,7 @@ import type {
   TelegramBotConfig,
   ExtendedTelegramBotConfig,
   ParsedQuestion,
+  PendingQuestionWithSession,
   Session,
   TelegramFormattedMessage,
   VerbosityLevel,
@@ -59,7 +60,7 @@ export class TelegramBot {
   private sessionScanner: ClaudeSessionScanner;
   private allowedUsers: Set<number>;
   private userChatIds: Map<number, number> = new Map(); // userId -> chatId
-  private pendingQuestions: Map<number, ParsedQuestion> = new Map(); // chatId -> question
+  private pendingQuestions: Map<number, PendingQuestionWithSession> = new Map(); // chatId -> question with sessionId
   private awaitingCustomInput: Set<number> = new Set(); // chatIds awaiting custom input
   private outputUnsubscribers: Map<string, () => void> = new Map(); // sessionId -> unsubscribe function
   private errorUnsubscribers: Map<string, () => void> = new Map(); // sessionId -> error unsubscribe
@@ -2271,21 +2272,21 @@ export class TelegramBot {
         } else {
           // User selected a numbered option
           const optionIndex = parseInt(selection, 10);
-          const question = this.pendingQuestions.get(chatId);
+          const pending = this.pendingQuestions.get(chatId);
 
-          if (question && question.options[optionIndex]) {
-            const selectedOption = question.options[optionIndex];
+          if (pending && pending.question.options[optionIndex]) {
+            const selectedOption = pending.question.options[optionIndex];
 
-            // Get thread context from last known user thread
-            const userId = ctx.from?.id;
-            const threadKey = `${chatId}:${userId}`;
-            const threadId = this.userLastThreadId.get(threadKey);
+            // Use the session ID that was stored when the question was asked
+            // This ensures the answer goes to the correct session, not whatever session
+            // is currently active or bound to the user's current thread
+            const sessionId = pending.sessionId;
+            const session = this.sessionManager.getSession(sessionId);
 
-            // Resolve session based on thread context
-            const { session, sessionId } = this.resolveSessionForThread(chatId, threadId);
-
-            if (!session || !sessionId) {
-              await ctx.answerCbQuery('No active session');
+            if (!session) {
+              await ctx.answerCbQuery('Session no longer active');
+              console.log(`[Answer] Session ${sessionId.substring(0, 8)}... no longer exists, cannot send answer`);
+              this.pendingQuestions.delete(chatId);
               return;
             }
 
@@ -2293,8 +2294,8 @@ export class TelegramBot {
             this.waitingForUserResponse.set(sessionId, false);
             console.log(`[Answer] User responded for session ${sessionId.substring(0, 8)}..., resuming message forwarding`);
 
-            // Send the answer as a new message to Claude using the resolved session
-            console.log(`[Answer] Sending answer as new message: "${selectedOption.label}" (session: ${sessionId.substring(0, 8)}...)`);
+            // Send the answer as a new message to Claude using the STORED session (the one that asked)
+            console.log(`[Answer] Sending answer to ORIGINAL session: "${selectedOption.label}" (session: ${sessionId.substring(0, 8)}...)`);
             this.sessionManager.sendToSession(sessionId, selectedOption.label);
 
             await ctx.answerCbQuery(`Selected: ${selectedOption.label}`);
@@ -2419,6 +2420,8 @@ export class TelegramBot {
           return;
         }
 
+        // Get the stored pending question to find the ORIGINAL session that asked
+        const pending = this.pendingQuestions.get(chatId);
         this.awaitingCustomInput.delete(chatId);
         this.pendingQuestions.delete(chatId);
 
@@ -2428,8 +2431,25 @@ export class TelegramBot {
         // Send custom response as a new message to Claude
         console.log(`[CustomAnswer] Sending as new message: "${text}"`);
         try {
-          // Use thread-aware session resolution when threaded mode is enabled
-          if (this.threadedModeConfig.enabled && this.threadManager && incomingThreadId !== undefined) {
+          // Use the stored session ID from the pending question if available
+          // This ensures the answer goes to the session that asked, not the current thread's session
+          if (pending?.sessionId) {
+            const storedSessionId = pending.sessionId;
+            const session = this.sessionManager.getSession(storedSessionId);
+            if (session) {
+              // Resume normal message forwarding for this session (per-session tracking)
+              this.waitingForUserResponse.set(storedSessionId, false);
+              console.log(`[CustomAnswer] User responded for ORIGINAL session ${storedSessionId.substring(0, 8)}..., resuming message forwarding`);
+              this.sessionManager.sendToSession(storedSessionId, text);
+            } else {
+              await this.replyWithThreadSupport(ctx,
+                'The session that asked this question no longer exists.',
+                incomingThreadId
+              );
+              return;
+            }
+          } else if (this.threadedModeConfig.enabled && this.threadManager && incomingThreadId !== undefined) {
+            // Fallback: Use thread-aware session resolution when no stored session
             // Use ThreadManager as the canonical source for session-thread mappings
             const boundSessionId = this.threadManager.getSessionForThread(chatId, incomingThreadId);
 
@@ -3380,6 +3400,10 @@ export class TelegramBot {
     const outputSessionId = this.currentOutputSessionId;
     const outputSession = outputSessionId ? this.sessionManager.getSession(outputSessionId) : null;
 
+    // Determine the session ID to store with this question for answer routing
+    // This is CRITICAL: answers must go back to the session that asked the question
+    let questionSessionId: string | null = outputSessionId;
+
     console.log(`[Question] OUTPUT ROUTING: currentOutputSessionId=${outputSessionId?.substring(0, 8) || 'null'}`);
     console.log(`[Question] Global active session: ${this.sessionManager.getActiveSession()?.id.substring(0, 8) || 'none'}`);
 
@@ -3397,6 +3421,7 @@ export class TelegramBot {
       // Fallback to global active session if no output session is tracked
       const activeSession = this.sessionManager.getActiveSession();
       if (activeSession) {
+        questionSessionId = activeSession.id; // Use fallback session for answer routing
         const sessionThread = this.threadManager?.getThreadForSession(activeSession.id);
         if (sessionThread) {
           sessionThreadId = sessionThread.threadId;
@@ -3408,6 +3433,12 @@ export class TelegramBot {
       } else {
         console.log(`[Question] No session for question forwarding`);
       }
+    }
+
+    // If we don't have a session ID, we can't route answers properly
+    if (!questionSessionId) {
+      console.error(`[Question] CRITICAL: No session ID available to track question for answer routing!`);
+      return;
     }
 
     // Build list of chats to send to
@@ -3450,9 +3481,10 @@ export class TelegramBot {
           }
         }
 
-        console.log(`[Question] Sending to chat ${chatId}, threadId=${threadId}`);
-        // Store pending question for this chat
-        this.pendingQuestions.set(chatId, question);
+        console.log(`[Question] Sending to chat ${chatId}, threadId=${threadId}, storing sessionId=${questionSessionId.substring(0, 8)}...`);
+        // Store pending question for this chat WITH the session ID that asked it
+        // This ensures answers are routed back to the correct session
+        this.pendingQuestions.set(chatId, { question, sessionId: questionSessionId });
 
         const sendOptions: {
           parse_mode?: 'Markdown' | 'HTML';
