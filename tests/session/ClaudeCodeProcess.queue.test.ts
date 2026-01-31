@@ -1,6 +1,7 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { EventEmitter } from 'events';
 import { spawn, type ChildProcess } from 'child_process';
+import { Writable } from 'stream';
 
 // Mock child_process
 jest.mock('child_process', () => ({
@@ -16,15 +17,32 @@ jest.mock('fs', () => ({
 import { ClaudeCodeProcess } from '../../src/session/ClaudeCodeProcess.js';
 
 /**
- * Creates a mock ChildProcess with controllable stdout/stderr/close events
+ * Creates a mock stdin stream
  */
-function createMockChildProcess(): ChildProcess & EventEmitter {
+function createMockStdin(): Writable & { writtenData: string[] } {
+  const chunks: string[] = [];
+  const mockStdin = new Writable({
+    write(chunk, _encoding, callback) {
+      chunks.push(chunk.toString());
+      callback();
+    }
+  }) as Writable & { writtenData: string[] };
+  mockStdin.writtenData = chunks;
+  return mockStdin;
+}
+
+/**
+ * Creates a mock ChildProcess with controllable stdout/stderr/stdin
+ */
+function createMockChildProcess(): ChildProcess & EventEmitter & { mockStdin: Writable & { writtenData: string[] } } {
   const proc = new EventEmitter() as any;
 
-  // Create mock stdout and stderr streams
+  // Create mock stdin, stdout and stderr streams
+  const mockStdin = createMockStdin();
+  proc.stdin = mockStdin;
+  proc.mockStdin = mockStdin;
   proc.stdout = new EventEmitter();
   proc.stderr = new EventEmitter();
-  proc.stdin = null; // We use 'ignore' for stdin
 
   // Use Object.defineProperty for read-only properties
   Object.defineProperty(proc, 'pid', {
@@ -44,12 +62,12 @@ function createMockChildProcess(): ChildProcess & EventEmitter {
     return true;
   });
 
-  return proc as ChildProcess & EventEmitter;
+  return proc as ChildProcess & EventEmitter & { mockStdin: Writable & { writtenData: string[] } };
 }
 
-describe('ClaudeCodeProcess Message Queue', () => {
+describe('ClaudeCodeProcess Persistent Process Architecture', () => {
   let mockSpawn: jest.MockedFunction<typeof spawn>;
-  let mockChildProcess: ChildProcess & EventEmitter;
+  let mockChildProcess: ReturnType<typeof createMockChildProcess>;
 
   beforeEach(() => {
     mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
@@ -62,93 +80,84 @@ describe('ClaudeCodeProcess Message Queue', () => {
   });
 
   describe('send()', () => {
-    it('should spawn a new process for the first message', () => {
+    it('should spawn a persistent process on first send', (done) => {
       const process = new ClaudeCodeProcess('/test/dir', 'claude');
 
       process.send('Hello Claude');
 
-      expect(mockSpawn).toHaveBeenCalledTimes(1);
-      expect(mockSpawn).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.arrayContaining(['--print', 'Hello Claude']),
-        expect.any(Object)
-      );
+      // Wait for the process ready timeout
+      setTimeout(() => {
+        expect(mockSpawn).toHaveBeenCalledTimes(1);
+        expect(mockSpawn).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.arrayContaining(['--input-format', 'stream-json', '--output-format', 'stream-json']),
+          expect.any(Object)
+        );
+        done();
+      }, 150);
     });
 
-    it('should queue messages when a process is already running', () => {
+    it('should write messages to stdin as JSON', (done) => {
       const process = new ClaudeCodeProcess('/test/dir', 'claude');
 
-      // Send first message - spawns process
-      process.send('Message 1');
-      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      process.send('Hello Claude');
 
-      // Send second message while first is still running - should queue
-      process.send('Message 2');
-      expect(mockSpawn).toHaveBeenCalledTimes(1); // Still only 1 spawn
-
-      // Send third message - should also queue
-      process.send('Message 3');
-      expect(mockSpawn).toHaveBeenCalledTimes(1); // Still only 1 spawn
+      // Wait for the process ready timeout
+      setTimeout(() => {
+        expect(mockChildProcess.mockStdin.writtenData.length).toBeGreaterThan(0);
+        const writtenMessage = mockChildProcess.mockStdin.writtenData[0];
+        const parsed = JSON.parse(writtenMessage.trim());
+        expect(parsed.type).toBe('user');
+        expect(parsed.message.role).toBe('user');
+        expect(parsed.message.content[0].type).toBe('text');
+        expect(parsed.message.content[0].text).toBe('Hello Claude');
+        done();
+      }, 150);
     });
 
-    it('should process queued messages when process completes', () => {
+    it('should not spawn a new process for subsequent messages', (done) => {
       const process = new ClaudeCodeProcess('/test/dir', 'claude');
 
-      // Send first message
       process.send('Message 1');
-      expect(mockSpawn).toHaveBeenCalledTimes(1);
 
-      // Queue second message
-      process.send('Message 2');
-      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      // Wait for process to be ready
+      setTimeout(() => {
+        expect(mockSpawn).toHaveBeenCalledTimes(1);
 
-      // Create new mock for second spawn
-      const secondMockProcess = createMockChildProcess();
-      mockSpawn.mockReturnValue(secondMockProcess);
+        // Send more messages
+        process.send('Message 2');
+        process.send('Message 3');
 
-      // Simulate first process completing
-      mockChildProcess.emit('close', 0);
+        // Should still only have spawned once
+        expect(mockSpawn).toHaveBeenCalledTimes(1);
 
-      // Should have spawned second process for queued message
-      expect(mockSpawn).toHaveBeenCalledTimes(2);
-      expect(mockSpawn).toHaveBeenLastCalledWith(
-        expect.any(String),
-        expect.arrayContaining(['Message 2']),
-        expect.any(Object)
-      );
+        // All messages should be written to stdin
+        expect(mockChildProcess.mockStdin.writtenData.length).toBe(3);
+        done();
+      }, 150);
     });
 
-    it('should process multiple queued messages in order', () => {
-      const processes: (ChildProcess & EventEmitter)[] = [];
-      const spawnCalls: string[][] = [];
-
-      mockSpawn.mockImplementation((_cmd: any, args: any) => {
-        spawnCalls.push(args as string[]);
-        const proc = createMockChildProcess();
-        processes.push(proc);
-        return proc as any;
-      });
-
+    it('should queue messages sent before process is ready', (done) => {
       const process = new ClaudeCodeProcess('/test/dir', 'claude');
 
-      // Send first message
+      // Send multiple messages immediately (before process is ready)
       process.send('Message 1');
-
-      // Queue multiple messages
       process.send('Message 2');
       process.send('Message 3');
-      process.send('Message 4');
 
-      // Should only have spawned once so far
-      expect(spawnCalls.length).toBe(1);
-      expect(spawnCalls[0]).toContain('Message 1');
+      // Wait for process to be ready and pending messages to be processed
+      setTimeout(() => {
+        // All messages should be written to stdin
+        expect(mockChildProcess.mockStdin.writtenData.length).toBe(3);
 
-      // Complete first process
-      processes[0].emit('close', 0);
-
-      // Should process next queued message
-      expect(spawnCalls.length).toBe(2);
-      expect(spawnCalls[1]).toContain('Message 2');
+        // Verify the messages
+        const messages = mockChildProcess.mockStdin.writtenData.map(m => {
+          const parsed = JSON.parse(m.trim());
+          return parsed.message.content[0].text;
+        });
+        expect(messages).toEqual(['Message 1', 'Message 2', 'Message 3']);
+        done();
+      }, 150);
     });
 
     it('should throw error if process has been killed', () => {
@@ -160,101 +169,163 @@ describe('ClaudeCodeProcess Message Queue', () => {
     });
   });
 
-  describe('stale event handler protection', () => {
-    it('should ignore events from stale processes', () => {
-      const process = new ClaudeCodeProcess('/test/dir', 'claude');
-      const outputHandler = jest.fn();
-      process.on('output', outputHandler);
+  describe('session continuity', () => {
+    it('should use --resume flag when existingSessionId is provided', () => {
+      const process = new ClaudeCodeProcess('/test/dir', 'claude', 'existing-session-123');
 
-      // Send first message
-      process.send('Message 1');
-      const firstProcess = mockChildProcess;
+      process.send('Hello');
 
-      // Queue second message
-      process.send('Message 2');
-
-      // Create new mock for second spawn
-      const secondProcess = createMockChildProcess();
-      mockSpawn.mockReturnValue(secondProcess);
-
-      // Complete first process, triggering second spawn
-      firstProcess.emit('close', 0);
-
-      // Emit output from second (current) process - should be processed
-      secondProcess.stdout!.emit('data', Buffer.from('{"type":"text"}\n'));
-      expect(outputHandler).toHaveBeenCalledTimes(1);
-
-      // Emit output from first (stale) process - should be ignored
-      firstProcess.stdout!.emit('data', Buffer.from('{"type":"stale"}\n'));
-      // Output handler should not have been called again
-      expect(outputHandler).toHaveBeenCalledTimes(1);
+      expect(mockSpawn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.arrayContaining(['--resume', 'existing-session-123']),
+        expect.any(Object)
+      );
     });
 
-    it('should ignore close events from stale processes', () => {
+    it('should capture session ID from output', (done) => {
       const process = new ClaudeCodeProcess('/test/dir', 'claude');
-      const messageCompleteHandler = jest.fn();
-      process.on('message_complete', messageCompleteHandler);
 
-      // Send first message
-      process.send('Message 1');
-      const firstProcess = mockChildProcess;
+      process.send('Hello');
 
-      // Queue second message
-      process.send('Message 2');
+      // Wait for process to be ready
+      setTimeout(() => {
+        // Simulate session_id in output
+        mockChildProcess.stdout!.emit('data', Buffer.from('{"session_id":"captured-session-456"}\n'));
 
-      // Create new mock for second spawn
-      const secondProcess = createMockChildProcess();
-      mockSpawn.mockReturnValue(secondProcess);
-
-      // Complete first process
-      firstProcess.emit('close', 0);
-      expect(messageCompleteHandler).toHaveBeenCalledTimes(1);
-
-      // Emit close from first (stale) process again - should be ignored
-      firstProcess.emit('close', 0);
-      expect(messageCompleteHandler).toHaveBeenCalledTimes(1); // Still only 1
-
-      // Complete second process - should be processed
-      secondProcess.emit('close', 0);
-      expect(messageCompleteHandler).toHaveBeenCalledTimes(2);
+        expect(process.getSessionId()).toBe('captured-session-456');
+        done();
+      }, 150);
     });
   });
 
-  describe('session continuity', () => {
-    it('should use --resume flag after first message', async () => {
-      const processes: (ChildProcess & EventEmitter)[] = [];
-      const spawnCalls: string[][] = [];
-
-      mockSpawn.mockImplementation((_cmd: any, args: any) => {
-        spawnCalls.push(args as string[]);
-        const mock = createMockChildProcess();
-        processes.push(mock);
-        // Simulate session_id in output synchronously
-        setImmediate(() => {
-          mock.stdout!.emit('data', Buffer.from('{"session_id":"test-session-123"}\n'));
-        });
-        return mock as any;
-      });
-
+  describe('process lifecycle', () => {
+    it('should respawn process if it closes and new message is sent', (done) => {
       const process = new ClaudeCodeProcess('/test/dir', 'claude');
 
-      // First message - no --resume
       process.send('Message 1');
-      expect(spawnCalls[0]).not.toContain('--resume');
 
-      // Wait for session ID to be captured
-      await new Promise<void>(resolve => setImmediate(resolve));
+      // Wait for process to be ready
+      setTimeout(() => {
+        expect(mockSpawn).toHaveBeenCalledTimes(1);
 
-      // Complete first process
-      processes[0].emit('close', 0);
+        // Simulate process close
+        mockChildProcess.emit('close', 0);
 
-      // Send another message now (not queued)
-      process.send('Message 2');
+        // Create new mock for respawn
+        const newMockProcess = createMockChildProcess();
+        mockSpawn.mockReturnValue(newMockProcess);
 
-      // Second spawn should have --resume
-      expect(spawnCalls.length).toBe(2);
-      expect(spawnCalls[1]).toContain('--resume');
-      expect(spawnCalls[1]).toContain('test-session-123');
+        // Send another message - should respawn
+        process.send('Message 2');
+
+        setTimeout(() => {
+          expect(mockSpawn).toHaveBeenCalledTimes(2);
+          done();
+        }, 150);
+      }, 150);
+    });
+
+    it('should emit close and message_complete events when process closes', (done) => {
+      const process = new ClaudeCodeProcess('/test/dir', 'claude');
+      const closeHandler = jest.fn();
+      const messageCompleteHandler = jest.fn();
+
+      process.on('close', closeHandler);
+      process.on('message_complete', messageCompleteHandler);
+
+      process.send('Hello');
+
+      // Wait for process to be ready
+      setTimeout(() => {
+        // Simulate process close
+        mockChildProcess.emit('close', 0);
+
+        expect(closeHandler).toHaveBeenCalledWith(0);
+        expect(messageCompleteHandler).toHaveBeenCalledWith(0);
+        done();
+      }, 150);
+    });
+  });
+
+  describe('error handling', () => {
+    it('should emit error when stdin write fails', (done) => {
+      const process = new ClaudeCodeProcess('/test/dir', 'claude');
+      const errorHandler = jest.fn();
+      process.on('error', errorHandler);
+
+      process.send('Hello');
+
+      // Wait for process to be ready
+      setTimeout(() => {
+        // Destroy stdin to simulate failure
+        mockChildProcess.stdin = null;
+
+        // Try to send another message
+        process.send('This should fail');
+
+        // Error should be emitted
+        setTimeout(() => {
+          expect(errorHandler).toHaveBeenCalled();
+          done();
+        }, 50);
+      }, 150);
+    });
+
+    it('should emit error for ENOENT when CLI not found', () => {
+      const process = new ClaudeCodeProcess('/test/dir', 'claude');
+      const errorHandler = jest.fn();
+      process.on('error', errorHandler);
+
+      process.send('Hello');
+
+      // Simulate ENOENT error
+      const enoentError = new Error('spawn ENOENT') as NodeJS.ErrnoException;
+      enoentError.code = 'ENOENT';
+      mockChildProcess.emit('error', enoentError);
+
+      expect(errorHandler).toHaveBeenCalled();
+      const emittedError = errorHandler.mock.calls[0][0] as Error;
+      expect(emittedError.message).toContain('Claude CLI not found');
+    });
+  });
+
+  describe('output parsing', () => {
+    it('should emit output events for complete JSON lines', (done) => {
+      const process = new ClaudeCodeProcess('/test/dir', 'claude');
+      const outputs: string[] = [];
+      process.on('output', (data: string) => outputs.push(data));
+
+      process.send('Hello');
+
+      // Wait for process to be ready
+      setTimeout(() => {
+        // Send output
+        mockChildProcess.stdout!.emit('data', Buffer.from('{"type":"assistant","content":"Hello"}\n'));
+        mockChildProcess.stdout!.emit('data', Buffer.from('{"type":"assistant","content":"World"}\n'));
+
+        expect(outputs).toHaveLength(2);
+        done();
+      }, 150);
+    });
+
+    it('should buffer partial JSON and emit when complete', (done) => {
+      const process = new ClaudeCodeProcess('/test/dir', 'claude');
+      const outputs: string[] = [];
+      process.on('output', (data: string) => outputs.push(data));
+
+      process.send('Hello');
+
+      // Wait for process to be ready
+      setTimeout(() => {
+        // Send partial output
+        mockChildProcess.stdout!.emit('data', Buffer.from('{"type":"assi'));
+        expect(outputs).toHaveLength(0);
+
+        // Complete the line
+        mockChildProcess.stdout!.emit('data', Buffer.from('stant","content":"Test"}\n'));
+        expect(outputs).toHaveLength(1);
+        done();
+      }, 150);
     });
   });
 });

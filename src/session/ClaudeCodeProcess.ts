@@ -1,7 +1,6 @@
 import { EventEmitter } from 'events';
 import { spawn, type ChildProcess } from 'child_process';
 import { existsSync } from 'fs';
-import { randomUUID } from 'crypto';
 import type { ClaudeCodeProcessInterface } from '../types/index.js';
 
 export interface ClaudeCodeProcessEvents {
@@ -19,8 +18,13 @@ const COMMON_CLAUDE_PATHS = [
 
 /**
  * Wraps a Claude Code CLI process for interaction
- * Uses --print mode with --resume to maintain conversation continuity
- * Each message spawns a new process but continues the same Claude session
+ *
+ * Uses a SINGLE persistent process per session with:
+ * - --input-format stream-json: enables stdin input
+ * - --output-format stream-json: parseable streaming output
+ *
+ * This allows sending messages (including answers to questions) via stdin
+ * without spawning new processes.
  */
 export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcessInterface {
   private process: ChildProcess | null = null;
@@ -28,13 +32,10 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
   private outputBuffer = '';
   private resolvedCliPath: string;
   private claudeSessionId: string | null = null; // Session ID returned by Claude CLI
-  private isFirstMessage = true;
   private existingSessionId: string | null = null; // For attaching to existing sessions
-
-  // Message queue to prevent concurrent process spawning
-  // When a process is running, new messages are queued and sent when the process completes
-  private pendingMessages: string[] = [];
-  private processId: number = 0; // Unique ID to track which process emits events
+  private processSpawned = false; // Whether the persistent process has been spawned
+  private processReady = false; // Whether the process is ready to receive stdin input
+  private pendingMessages: string[] = []; // Messages queued while process is starting
 
   constructor(
     private workingDir: string,
@@ -47,7 +48,6 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
     if (existingSessionId) {
       this.existingSessionId = existingSessionId;
       this.claudeSessionId = existingSessionId;
-      this.isFirstMessage = false; // Will use --resume from the start
     }
     // Don't spawn immediately - wait for first input
     this._isRunning = true; // Mark as running so send() works
@@ -87,68 +87,63 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
   }
 
   /**
-   * Spawn the Claude Code CLI process for a single message
-   * Uses --print mode with streaming JSON for parseable output
+   * Spawn the persistent Claude Code CLI process
+   * Uses streaming JSON for both input and output
    */
-  private spawnForMessage(prompt: string): void {
-    try {
-      // Increment process ID to track which process emits events
-      // This prevents stale event handlers from corrupting state
-      this.processId++;
-      const currentProcessId = this.processId;
+  private spawnPersistentProcess(): void {
+    if (this.processSpawned) {
+      return; // Already spawned
+    }
 
-      // Build args:
-      // --print: non-interactive mode (exit after response)
-      // --output-format stream-json: parseable streaming output (requires --verbose)
-      // --verbose: required for stream-json output format
-      // --resume: continue previous session (for follow-up messages)
+    try {
+      // Build args for persistent process with stdin/stdout streaming:
+      // --print: non-interactive mode
+      // --input-format stream-json: accept JSON messages on stdin
+      // --output-format stream-json: emit JSON on stdout
+      // --verbose: required for stream-json output
       const args = [
         '--dangerously-skip-permissions',
         '--print',
         '--verbose',
+        '--input-format', 'stream-json',
         '--output-format', 'stream-json',
       ];
 
-      // For follow-up messages, use --resume to continue the conversation
-      if (!this.isFirstMessage && this.claudeSessionId) {
+      // If resuming an existing session, add --resume
+      if (this.claudeSessionId) {
         args.push('--resume', this.claudeSessionId);
       }
 
-      // Add the prompt
-      args.push(prompt);
-
-
       // Create a clean environment without Claude session-related variables
-      // The parent process may be running inside Claude Code which sets various
-      // environment variables that could conflict with spawning a new Claude CLI process
       const cleanEnv = { ...process.env };
-      // Remove session/entrypoint variables that could cause the child to think
-      // it's part of the parent Claude session
       delete cleanEnv.CLAUDE_SESSION_ID;
       delete cleanEnv.CLAUDECODE;
       delete cleanEnv.CLAUDE_CODE_ENTRYPOINT;
-      // Note: Keep CLAUDE_CODE_USE_FOUNDRY as it may be needed for authentication
 
-      console.log(`[ClaudeCodeProcess] Spawning process #${currentProcessId} for message: "${prompt.substring(0, 50)}..."`);
+      console.log(`[ClaudeCodeProcess] Spawning persistent process with stdin streaming...`);
+      if (this.claudeSessionId) {
+        console.log(`[ClaudeCodeProcess] Resuming session: ${this.claudeSessionId.substring(0, 8)}...`);
+      }
 
       this.process = spawn(this.resolvedCliPath, args, {
         cwd: this.workingDir,
-        // stdin is 'ignore' because --print mode doesn't support interactive input
-        // When Claude asks a question (AskUserQuestion), it gets auto-denied
-        // We detect the question in output and send the user's answer as a new message
-        stdio: ['ignore', 'pipe', 'pipe'],
+        // stdin is 'pipe' to allow writing messages
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...cleanEnv, FORCE_COLOR: '0' },
       });
 
+      this.processSpawned = true;
 
-      // Handle stdout
+      // Mark process as ready after a brief moment to ensure it's initialized
+      // Also process any pending messages that were queued during spawn
+      setTimeout(() => {
+        this.processReady = true;
+        console.log(`[ClaudeCodeProcess] Process ready, processing ${this.pendingMessages.length} pending messages`);
+        this.processPendingMessages();
+      }, 100);
+
       // Handle stdout
       this.process.stdout?.on('data', (data: Buffer) => {
-        // Guard against stale event handlers from previous processes
-        if (currentProcessId !== this.processId) {
-          return;
-        }
-
         const text = data.toString();
         this.outputBuffer += text;
 
@@ -163,6 +158,7 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
               const parsed = JSON.parse(line);
               if (parsed.session_id && !this.claudeSessionId) {
                 this.claudeSessionId = parsed.session_id;
+                console.log(`[ClaudeCodeProcess] Got session ID: ${parsed.session_id.substring(0, 8)}...`);
               }
             } catch {
               // Not valid JSON, ignore
@@ -174,11 +170,6 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
       // Handle stderr - not all stderr is an error, some is status info
       this.process.stderr?.on('data', (data: Buffer) => {
-        // Guard against stale event handlers from previous processes
-        if (currentProcessId !== this.processId) {
-          return;
-        }
-
         const text = data.toString();
         // Only emit as error if it looks like an actual error
         if (text.toLowerCase().includes('error') || text.toLowerCase().includes('fatal')) {
@@ -190,17 +181,10 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
 
       // Handle process close
       this.process.on('close', (code) => {
-        // Guard against stale event handlers from previous processes
-        if (currentProcessId !== this.processId) {
-          console.log(`[ClaudeCodeProcess] Ignoring close event from stale process #${currentProcessId} (current is #${this.processId})`);
-          return;
-        }
-
-        console.log(`[ClaudeCodeProcess] Process #${currentProcessId} closed with code ${code}`);
+        console.log(`[ClaudeCodeProcess] Process closed with code ${code}`);
 
         // Emit any remaining buffered output
         if (this.outputBuffer.trim()) {
-          // Try to extract session_id from remaining buffer
           try {
             const parsed = JSON.parse(this.outputBuffer.trim());
             if (parsed.session_id && !this.claudeSessionId) {
@@ -213,20 +197,13 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
           this.outputBuffer = '';
         }
 
-        // Process completed - in print mode this is normal
-        // Don't set _isRunning to false, we can still send more messages
         this.process = null;
+        this.processSpawned = false;
+        this.processReady = false;
 
-        // Mark that first message is done
-        if (this.isFirstMessage) {
-          this.isFirstMessage = false;
-        }
-
-        // Emit close event for this message completion
+        // Emit close event
+        this.emit('close', code);
         this.emit('message_complete', code);
-
-        // Process any queued messages
-        this.processNextMessage();
       });
 
       // Handle process errors (like ENOENT)
@@ -249,53 +226,73 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
   }
 
   /**
-   * Send input to Claude - spawns a new process for each message
-   * but maintains conversation via session ID
+   * Send input to Claude via stdin
    *
-   * If a process is already running, the message is queued and will be
-   * sent when the current process completes. This prevents race conditions
-   * where multiple processes could interfere with each other.
+   * For stream-json input format, messages are sent as JSON objects.
+   * The format is: {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "message"}]}}
    */
   send(input: string): void {
     if (!this._isRunning) {
       throw new Error('Process has been killed');
     }
 
-    // If a process is already running, queue the message instead of spawning
-    if (this.process) {
-      console.log(`[ClaudeCodeProcess] Process still running, queuing message: "${input.substring(0, 50)}..."`);
+    // Spawn the persistent process if not already running
+    if (!this.processSpawned) {
+      this.spawnPersistentProcess();
+    }
+
+    // If process isn't ready yet, queue the message
+    if (!this.processReady) {
+      console.log(`[ClaudeCodeProcess] Process not ready, queuing message: "${input.substring(0, 50)}..."`);
       this.pendingMessages.push(input);
       return;
     }
 
-    // Spawn a new process for this message
-    this.spawnForMessage(input);
+    this.writeMessageToStdin(input);
   }
 
   /**
-   * Process the next queued message if any
-   * Called when the current process completes
+   * Write a message to stdin in the stream-json format
    */
-  private processNextMessage(): void {
-    if (this.pendingMessages.length > 0 && !this.process) {
-      const nextMessage = this.pendingMessages.shift()!;
-      console.log(`[ClaudeCodeProcess] Processing queued message: "${nextMessage.substring(0, 50)}..."`);
-      this.spawnForMessage(nextMessage);
+  private writeMessageToStdin(input: string): void {
+    if (!this.process?.stdin) {
+      console.error('[ClaudeCodeProcess] No stdin available to write to');
+      this.emit('error', new Error('No stdin available - process may have crashed'));
+      return;
+    }
+
+    // Format the message as stream-json input
+    // The format follows Claude CLI's streaming JSON protocol
+    const message = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: input }]
+      }
+    };
+
+    const jsonMessage = JSON.stringify(message);
+    console.log(`[ClaudeCodeProcess] Writing to stdin: ${jsonMessage.substring(0, 100)}...`);
+    this.process.stdin.write(jsonMessage + '\n');
+  }
+
+  /**
+   * Process any messages that were queued while the process was starting
+   */
+  private processPendingMessages(): void {
+    while (this.pendingMessages.length > 0) {
+      const message = this.pendingMessages.shift()!;
+      console.log(`[ClaudeCodeProcess] Processing queued message: "${message.substring(0, 50)}..."`);
+      this.writeMessageToStdin(message);
     }
   }
 
   /**
    * Write a response to stdin (for answering AskUserQuestion prompts)
-   * This is used when Claude asks a question and we need to provide the answer
+   * This is the same as send() in the new architecture
    */
   writeToStdin(response: string): void {
-    if (!this.process || !this.process.stdin) {
-      console.warn('[ClaudeCodeProcess] No active process or stdin to write to');
-      return;
-    }
-
-    console.log(`[ClaudeCodeProcess] Writing to stdin: "${response}"`);
-    this.process.stdin.write(response + '\n');
+    this.send(response);
   }
 
   /**
@@ -310,6 +307,9 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
    */
   kill(): void {
     if (this.process) {
+      // Close stdin to signal end of input
+      this.process.stdin?.end();
+
       this.process.kill('SIGTERM');
 
       // Force kill after timeout if still running
@@ -320,6 +320,9 @@ export class ClaudeCodeProcess extends EventEmitter implements ClaudeCodeProcess
       }, 5000);
     }
     this._isRunning = false;
+    this.processSpawned = false;
+    this.processReady = false;
+    this.pendingMessages = [];
     this.emit('close', 0);
   }
 }

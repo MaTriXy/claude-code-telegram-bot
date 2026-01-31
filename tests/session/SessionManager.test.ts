@@ -1,8 +1,17 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { EventEmitter } from 'events';
+import * as path from 'path';
+import * as os from 'os';
 import type { Session, ClaudeCodeProcessInterface } from '../../src/types/index.js';
 import { SessionManager } from '../../src/session/SessionManager.js';
 import { ClaudeCodeProcess } from '../../src/session/ClaudeCodeProcess.js';
+
+// Helper to get a cross-platform test path
+const getTestPath = (p: string): string => {
+  // On Windows, path.resolve will convert /tmp to C:\tmp
+  // We use this to make tests work on all platforms
+  return path.resolve(p);
+};
 
 // Mock ClaudeCodeProcess
 jest.mock('../../src/session/ClaudeCodeProcess.js');
@@ -41,7 +50,7 @@ describe('SessionManager', () => {
     );
     sessionManager = new SessionManager({
       claudeCliPath: 'claude',
-      defaultWorkingDir: '/tmp',
+      defaultWorkingDir: getTestPath('/tmp'),
     });
   });
 
@@ -66,15 +75,16 @@ describe('SessionManager', () => {
     });
 
     it('should use provided working directory', async () => {
-      const session = await sessionManager.createSession('test', '/home/user/projects');
+      const testPath = getTestPath('/home/user/projects');
+      const session = await sessionManager.createSession('test', testPath);
 
-      expect(session.workingDir).toBe('/home/user/projects');
+      expect(session.workingDir).toBe(testPath);
     });
 
     it('should use default working directory if not provided', async () => {
       const session = await sessionManager.createSession('test');
 
-      expect(session.workingDir).toBe('/tmp');
+      expect(session.workingDir).toBe(getTestPath('/tmp'));
     });
 
     it('should spawn Claude Code CLI process', async () => {
@@ -141,13 +151,14 @@ describe('SessionManager', () => {
     });
 
     it('should include session metadata', async () => {
-      await sessionManager.createSession('my-session', '/projects');
+      const testPath = getTestPath('/projects');
+      await sessionManager.createSession('my-session', testPath);
 
       const sessions = sessionManager.listSessions();
 
       expect(sessions[0]).toMatchObject({
         name: 'my-session',
-        workingDir: '/projects',
+        workingDir: testPath,
         status: 'idle',
       });
       expect(sessions[0].id).toBeDefined();

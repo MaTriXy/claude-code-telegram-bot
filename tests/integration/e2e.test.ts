@@ -1,8 +1,14 @@
 import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import { EventEmitter } from 'events';
+import * as path from 'path';
 import { SessionManager } from '../../src/session/SessionManager.js';
 import { OutputParser } from '../../src/parser/OutputParser.js';
 import type { Session, ParsedQuestion, ClaudeOutput, ToolUseOutput } from '../../src/types/index.js';
+
+// Helper to get a cross-platform test path
+const getTestPath = (p: string): string => {
+  return path.resolve(p);
+};
 
 // Mock fs functions to allow any path in tests
 jest.mock('fs', () => ({
@@ -42,7 +48,7 @@ describe('Integration Tests', () => {
     jest.clearAllMocks();
     sessionManager = new SessionManager({
       claudeCliPath: 'claude',
-      defaultWorkingDir: '/tmp',
+      defaultWorkingDir: getTestPath('/tmp'),
     });
     outputParser = new OutputParser();
   });
@@ -137,9 +143,9 @@ describe('Integration Tests', () => {
 
   describe('Session Management', () => {
     it('should create multiple sessions with unique IDs', async () => {
-      const session1 = await sessionManager.createSession('project-a', '/tmp/a');
-      const session2 = await sessionManager.createSession('project-b', '/tmp/b');
-      const session3 = await sessionManager.createSession('project-c', '/tmp/c');
+      const session1 = await sessionManager.createSession('project-a', getTestPath('/tmp/a'));
+      const session2 = await sessionManager.createSession('project-b', getTestPath('/tmp/b'));
+      const session3 = await sessionManager.createSession('project-c', getTestPath('/tmp/c'));
 
       expect(session1.id).not.toBe(session2.id);
       expect(session2.id).not.toBe(session3.id);
@@ -166,15 +172,17 @@ describe('Integration Tests', () => {
     });
 
     it('should maintain separate session state', async () => {
-      const session1 = await sessionManager.createSession('session-a', '/project/a');
-      const session2 = await sessionManager.createSession('session-b', '/project/b');
+      const pathA = getTestPath('/project/a');
+      const pathB = getTestPath('/project/b');
+      const session1 = await sessionManager.createSession('session-a', pathA);
+      const session2 = await sessionManager.createSession('session-b', pathB);
 
       // Verify sessions have different working directories
       const retrieved1 = sessionManager.getSession(session1.id);
       const retrieved2 = sessionManager.getSession(session2.id);
 
-      expect(retrieved1?.workingDir).toBe('/project/a');
-      expect(retrieved2?.workingDir).toBe('/project/b');
+      expect(retrieved1?.workingDir).toBe(pathA);
+      expect(retrieved2?.workingDir).toBe(pathB);
     });
 
     it('should remove session when closed', async () => {

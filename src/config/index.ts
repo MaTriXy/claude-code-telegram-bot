@@ -284,21 +284,22 @@ export function buildStreamingConfig(): StreamingConfig {
  * Default: false (threaded mode is opt-in)
  */
 export function getThreadedModeEnabled(): boolean {
-  return parseBool(process.env['THREADED_MODE_ENABLED'], true);
+  return parseBool(process.env['THREADED_MODE_ENABLED'], false);
 }
 
 /**
  * Get whether auto-create topics is enabled from environment
+ * Default: false (auto-create is opt-in)
  */
 export function getThreadedAutoCreate(): boolean {
-  return parseBool(process.env['THREADED_AUTO_CREATE'], true);
+  return parseBool(process.env['THREADED_AUTO_CREATE'], false);
 }
 
 /**
  * Get default topic name prefix from environment
  */
 export function getThreadedDefaultTopic(): string | undefined {
-  const value = 'claude-code-';
+  const value = process.env['THREADED_DEFAULT_TOPIC'];
   return value && value.trim().length > 0 ? value.trim() : undefined;
 }
 
