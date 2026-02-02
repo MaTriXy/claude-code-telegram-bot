@@ -76,9 +76,25 @@ With this flag, Claude will automatically read, write, delete files, run command
 
 ## Prerequisites
 
-- **Node.js 18+** - [Download](https://nodejs.org/)
-- **Claude Code CLI** - Installed and authenticated ([Installation Guide](https://docs.anthropic.com/en/docs/claude-code))
-- **Telegram Bot Token** - Create via [@BotFather](https://t.me/BotFather)
+Before installing, ensure you have:
+
+- **Node.js 18+** - [Download from nodejs.org](https://nodejs.org/)
+- **Claude Code CLI** - Installed and authenticated with your Anthropic account ([Installation Guide](https://docs.anthropic.com/en/docs/claude-code))
+- **Telegram Bot Token** - Create via [@BotFather](https://t.me/BotFather) (see instructions below)
+- **Your Telegram User ID** - For authorization (see instructions below)
+
+### Getting Your Bot Token
+
+1. Open Telegram and message [@BotFather](https://t.me/BotFather)
+2. Send `/newbot` command
+3. Follow the prompts to choose a name and username for your bot
+4. Copy the bot token provided (format: `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+
+### Finding Your User ID
+
+1. Open Telegram and message [@userinfobot](https://t.me/userinfobot)
+2. The bot will reply with your user ID (a numeric value like `123456789`)
+3. Save this ID for the `ALLOWED_USER_IDS` configuration
 
 ---
 
@@ -109,25 +125,44 @@ npm install
 # Create environment configuration
 cp .env.example .env
 
-# Configure your .env file (see Configuration section)
+# Configure your .env file (see Environment Setup section below)
 
 # Build and start
 npm run build
 npm start
 ```
 
-> **Finding your Telegram user ID:** Message [@userinfobot](https://t.me/userinfobot) on Telegram.
-
 ---
 
 ## Configuration
 
+### Environment Setup
+
+1. **Copy the example environment file:**
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Edit `.env` with your configuration:**
+   ```bash
+   # Required: Your Telegram bot token from @BotFather
+   TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+
+   # Required: Comma-separated Telegram user IDs allowed to use the bot
+   ALLOWED_USER_IDS=123456789,987654321
+
+   # Optional: Default working directory for new sessions
+   DEFAULT_WORKING_DIR=/home/user/projects
+   ```
+
+3. **Save the file and start the bot.**
+
 ### Required Settings
 
-| Variable | Description |
-|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
-| `ALLOWED_USER_IDS` | Comma-separated list of authorized Telegram user IDs |
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) | `123456789:ABCdef...` |
+| `ALLOWED_USER_IDS` | Comma-separated list of authorized Telegram user IDs | `123456789,987654321` |
 
 ### Optional Settings
 
