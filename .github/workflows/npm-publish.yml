@@ -28,7 +28,28 @@ jobs:
       - name: Build the project
         run: npm run build
 
+      - name: Check if version is already published
+        id: check
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          echo "Package: $PACKAGE_NAME@$PACKAGE_VERSION"
+
+          # Check if this version exists on npm
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null; then
+            echo "Version $PACKAGE_VERSION already published, skipping..."
+            echo "should_publish=false" >> $GITHUB_OUTPUT
+          else
+            echo "Version $PACKAGE_VERSION not found, will publish"
+            echo "should_publish=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Publish to npm
+        if: steps.check.outputs.should_publish == 'true'
         run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Skip publish (version exists)
+        if: steps.check.outputs.should_publish == 'false'
+        run: echo "✅ Skipped publishing - version already exists on npm"
