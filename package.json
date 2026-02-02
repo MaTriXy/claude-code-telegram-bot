@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-telegram-bot",
+  "name": "@a5c-ai/claude-code-telegram-bot",
   "version": "1.0.0",
   "description": "A Telegram bot to remotely operate Claude Code CLI from anywhere",
   "main": "dist/index.js",
@@ -49,6 +49,9 @@
     "LICENSE",
     ".env.example"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "dotenv": "^16.4.5",
     "execa": "^8.0.1",

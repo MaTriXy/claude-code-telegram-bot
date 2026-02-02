@@ -103,7 +103,7 @@ Before installing, ensure you have:
 ### Quick Install (npm)
 
 ```bash
-npm install -g claude-code-telegram-bot
+npm install -g @a5c-ai/claude-code-telegram-bot
 ```
 
 Create a `.env` file with your configuration and run:
