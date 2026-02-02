@@ -607,6 +607,26 @@ Contributions are welcome! Please:
 
 ---
 
+## Contributors
+
+<a href="https://github.com/Benihakak/claude-code-telegram-bot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Benihakak/claude-code-telegram-bot" />
+</a>
+
+---
+
+## Star History
+
+<a href="https://star-history.com/#Benihakak/claude-code-telegram-bot&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Benihakak/claude-code-telegram-bot&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Benihakak/claude-code-telegram-bot&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=Benihakak/claude-code-telegram-bot&type=Date" />
+ </picture>
+</a>
+
+---
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
