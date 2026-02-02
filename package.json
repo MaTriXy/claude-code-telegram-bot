@@ -1,6 +1,6 @@
 {
   "name": "@a5c-ai/claude-code-telegram-bot",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A Telegram bot to remotely operate Claude Code CLI from anywhere",
   "main": "dist/index.js",
   "bin": {
