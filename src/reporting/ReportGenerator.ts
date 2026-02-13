@@ -233,15 +233,42 @@ export class ReportGenerator {
       gap: 16px;
       padding: 0 22px;
     }
+    .top-bar-main {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-width: 0;
+      width: 100%;
+    }
     .page-title {
       font-size: 15px;
       font-weight: 700;
       color: var(--text-primary);
+      white-space: nowrap;
     }
     .page-subtitle {
       font-size: 12px;
       color: var(--text-secondary);
       font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .mobile-icon-btn {
+      display: none;
+      border: 1px solid var(--border);
+      background: var(--bg-overlay);
+      color: var(--text-primary);
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      height: 32px;
+      min-width: 32px;
+      padding: 0 10px;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
     }
     .content-area {
       flex: 1;
@@ -423,9 +450,101 @@ export class ReportGenerator {
       color: var(--text-secondary);
       font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
     }
+    .mobile-backdrop {
+      display: none;
+    }
     @media (max-width: 960px) {
       .sidebar { width: 220px; }
       .detail-panel.open { width: 320px; min-width: 320px; }
+    }
+    @media (max-width: 900px) {
+      body {
+        height: 100dvh;
+      }
+      .app-container {
+        height: 100dvh;
+      }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: min(86vw, 320px);
+        height: 100dvh;
+        z-index: 20;
+        transform: translateX(-102%);
+        transition: transform 0.24s ease;
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+      }
+      .sidebar.mobile-open {
+        transform: translateX(0);
+      }
+      .mobile-backdrop {
+        display: block;
+        position: fixed;
+        inset: 0;
+        background: rgba(1, 4, 9, 0.6);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s ease;
+        z-index: 15;
+      }
+      .mobile-backdrop.open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .main-content {
+        width: 100%;
+        min-width: 0;
+      }
+      .top-bar {
+        height: auto;
+        min-height: 56px;
+        padding: 10px 12px;
+        gap: 10px;
+      }
+      .top-bar-main {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+      }
+      .mobile-icon-btn {
+        display: inline-flex;
+        flex-shrink: 0;
+      }
+      .page-title {
+        font-size: 14px;
+      }
+      .page-subtitle {
+        width: 100%;
+        font-size: 11px;
+      }
+      .content-area {
+        flex-direction: column;
+        overflow: auto;
+      }
+      .flow-container {
+        align-items: flex-start;
+        justify-content: flex-start;
+        padding: 10px 8px 14px;
+        min-height: 54vh;
+      }
+      .flow-svg {
+        min-width: 720px;
+      }
+      .detail-panel {
+        width: 100%;
+        min-width: 100%;
+        height: 0;
+        min-height: 0;
+        border-left: none;
+        border-top: 1px solid var(--border);
+        transition: height 0.25s ease;
+      }
+      .detail-panel.open {
+        width: 100%;
+        min-width: 100%;
+        height: min(56vh, 520px);
+      }
     }
   </style>
 </head>
@@ -440,10 +559,15 @@ export class ReportGenerator {
         Click nodes for details.
       </div>
     </aside>
+    <div class="mobile-backdrop" id="mobileBackdrop"></div>
     <main class="main-content">
       <header class="top-bar">
-        <div class="page-title">Claude Task Report</div>
-        <div class="page-subtitle" id="sessionInfo"></div>
+        <button class="mobile-icon-btn" id="sidebarToggle" type="button" aria-label="Open navigation">Menu</button>
+        <div class="top-bar-main">
+          <div class="page-title">Claude Task Report</div>
+          <div class="page-subtitle" id="sessionInfo"></div>
+        </div>
+        <button class="mobile-icon-btn" id="focusLeadBtn" type="button" aria-label="Show run details">Overview</button>
       </header>
       <div class="content-area">
         <div class="flow-container" id="flowContainer"></div>
@@ -478,10 +602,36 @@ export class ReportGenerator {
     const panelMeta = document.getElementById('panelMeta');
     const panelBody = document.getElementById('panelBody');
     const panelClose = document.getElementById('panelClose');
+    const sidebar = document.querySelector('.sidebar');
+    const mobileBackdrop = document.getElementById('mobileBackdrop');
+    const sidebarToggle = document.getElementById('sidebarToggle');
+    const focusLeadBtn = document.getElementById('focusLeadBtn');
     const sessionsNav = document.getElementById('sessionsNav');
     const sessionInfo = document.getElementById('sessionInfo');
 
     panelClose.addEventListener('click', closePanel);
+    if (sidebarToggle) {
+      sidebarToggle.addEventListener('click', () => {
+        if (!sidebar || !mobileBackdrop) return;
+        const isOpen = sidebar.classList.toggle('mobile-open');
+        mobileBackdrop.classList.toggle('open', isOpen);
+      });
+    }
+    if (focusLeadBtn) {
+      focusLeadBtn.addEventListener('click', () => {
+        openPanel('lead');
+      });
+    }
+    if (mobileBackdrop) {
+      mobileBackdrop.addEventListener('click', () => {
+        closeMobileSidebar();
+      });
+    }
+    window.addEventListener('resize', () => {
+      if (window.innerWidth > 900) {
+        closeMobileSidebar();
+      }
+    });
     renderSidebar();
     renderHeader();
     renderFlow();
@@ -498,6 +648,14 @@ export class ReportGenerator {
           <span class="session-card-detail">run: \${escapeHtml(s.id.slice(0, 12))}...</span>
         </button>
       \`;
+
+      const card = sessionsNav.querySelector('.session-card');
+      if (card) {
+        card.addEventListener('click', () => {
+          closeMobileSidebar();
+          openPanel('lead');
+        });
+      }
     }
 
     function renderHeader() {
@@ -723,6 +881,13 @@ export class ReportGenerator {
       });
 
       detailPanel.classList.add('open');
+      closeMobileSidebar();
+
+      if (window.innerWidth <= 900) {
+        requestAnimationFrame(() => {
+          detailPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        });
+      }
     }
 
     function closePanel() {
@@ -732,6 +897,12 @@ export class ReportGenerator {
         if (selected) selected.classList.remove('selected');
       }
       state.selectedNodeId = null;
+    }
+
+    function closeMobileSidebar() {
+      if (!sidebar || !mobileBackdrop) return;
+      sidebar.classList.remove('mobile-open');
+      mobileBackdrop.classList.remove('open');
     }
 
     function buildPanelMeta(nodeId) {
