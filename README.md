@@ -283,6 +283,35 @@ npm start
 | `/reporthistory <projectPath> [--index N] [--session id] [--all]` | Download report from already completed runs | `/reporthistory /Users/me/project --index 2` |
 | `/babysit` | Start Babysitter workflow orchestration | `/babysit` |
 
+### Run Report Commands
+
+Generate HTML dashboards for live and historical runs:
+
+| Command | Purpose |
+|---------|---------|
+| `/report` | Send report for latest tracked run in current session |
+| `/report <runIdPrefix>` | Send report for a specific tracked run ID prefix |
+| `/reporthistory <projectPath>` | Send report for latest historical Babysitter run in project |
+| `/reporthistory <projectPath> --index N` | Pick older historical run (`1` = latest) |
+| `/reporthistory <projectPath> --session <sessionIdPrefix>` | Limit to one Claude session |
+| `/reporthistory <projectPath> --all` | Include non-Babysitter runs |
+
+Examples:
+
+```bash
+/report
+/report 01KHBV
+/reporthistory /Users/matrixy/Dev/MaTriXy/oneLine
+/reporthistory "/Users/matrixy/Dev/MaTriXy/oneLine" --index 3
+/reporthistory /Users/matrixy/Dev/MaTriXy/oneLine --session 51970530
+/reporthistory /Users/matrixy/Dev/MaTriXy/oneLine --all
+```
+
+Notes:
+- Historical runs are read from Claude logs under `~/.claude/projects/...`.
+- By default, `/reporthistory` filters to Babysitter runs.
+- Temporary report files are deleted after Telegram send. If `RUN_REPORTS_PREVIEW_DIR` is set, a persistent preview copy is also saved there.
+
 ### Settings
 
 | Command | Description | Example |
