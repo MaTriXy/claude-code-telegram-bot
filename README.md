@@ -202,6 +202,20 @@ npm start
 | `STREAMING_BLOCK_SIZE` | Characters per block in `block` mode | `50` |
 | `STREAMING_UPDATE_INTERVAL_MS` | Minimum interval between updates | `200` |
 
+### Run Reporting
+
+| Variable | Description | Default |
+|----------|-------------|--------|
+| `RUN_REPORTS_ENABLED` | Enable HTML run reports | `true` |
+| `RUN_REPORTS_AUTOSEND` | Auto-send a report after each run | `true` |
+| `RUN_REPORTS_BABYSITTER_ONLY` | Auto-send only for Babysitter runs | `true` |
+| `RUN_REPORTS_MAX_OUTPUT_CHARS` | Max output captured per run | `12000` |
+| `RUN_REPORTS_MAX_EVENTS` | Max events captured per run | `200` |
+| `RUN_REPORTS_MAX_TOOL_INPUT_CHARS` | Max tool input captured | `2000` |
+| `RUN_REPORTS_MAX_RUNS` | Max runs kept per session | `25` |
+| `RUN_REPORTS_MAX_FILE_MB` | Max report file size to send | `45` |
+| `RUN_REPORTS_PREVIEW_DIR` | Optional local directory to save report HTML files | - |
+
 ### Threaded Mode (Forum Topics)
 
 | Variable | Description | Default |
@@ -265,6 +279,8 @@ npm start
 | `/bookmark [action]` | Save/recall/list prompts | `/bookmark save test "run tests"` |
 | `/context` | Show context usage (tokens, percentage) | `/context` |
 | `/cost` | Show session cost information | `/cost` |
+| `/report [runId]` | Download latest run report | `/report` |
+| `/reporthistory <projectPath> [--index N] [--session id] [--all]` | Download report from already completed runs | `/reporthistory /Users/me/project --index 2` |
 | `/babysit` | Start Babysitter workflow orchestration | `/babysit` |
 
 ### Settings
